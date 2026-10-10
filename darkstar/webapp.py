@@ -3377,6 +3377,7 @@ def admin_create_or_update_user(request: Request, body: AdminUserRequest):
             display_name=body.display_name,
             org_db_name=body.org_db,
             role=body.role,
+            restrict_to_org=False,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

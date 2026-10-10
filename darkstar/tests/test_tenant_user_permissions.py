@@ -67,6 +67,7 @@ def test_platform_admin_can_manage_shared_accounts(user_database):
 
     result = db_helper.create_or_update_user(
         "shared@example.test", "UpdatedPassword1!", "Shared user", "org_alpha", "viewer",
+        restrict_to_org=False,
     )
 
     assert result == {"id": 7}

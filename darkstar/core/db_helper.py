@@ -1135,7 +1135,7 @@ def create_or_update_user(
     org_db_name: str,
     role: str,
     *,
-    restrict_to_org: bool = False,
+    restrict_to_org: bool,
 ) -> dict:
     """Create/update a user and upsert their organization membership."""
     email = _normalize_email(email)

@@ -107,37 +107,6 @@ problems in the documentation.
 
 ## Run Everything
 
-### Real organization lifecycle and isolation
-
-The integration tests exercise a running local Docker deployment and real
-MariaDB, including headless browser creation, all application roles, tenant
-schema tables, concurrent creation, failed schema cleanup, tenant data isolation,
-and persistence after restarting MariaDB, the web service and the scanner worker.
-They also check that a tenant administrator cannot reset another tenant's user
-password. Test findings are inserted directly; no scanners are launched.
-
-Use a development deployment with a platform administrator account. The tests
-create temporary organizations and users, then remove their own test data. Run
-from the repository root with Docker access and Chromium installed:
-
-```bash
-export RUN_DARKSTAR_INTEGRATION=1
-export DARKSTAR_TEST_EMAIL='your-platform-admin@example.test'
-read -rs -p 'Development admin password: ' DARKSTAR_TEST_PASSWORD
-export DARKSTAR_TEST_PASSWORD
-python3 -m pytest -c pytest.ini -m integration -v
-unset DARKSTAR_TEST_PASSWORD RUN_DARKSTAR_INTEGRATION
-```
-
-The defaults are `http://127.0.0.1:8080` and MariaDB at `127.0.0.1:3307`.
-Override them with `DARKSTAR_TEST_URL`, `DARKSTAR_TEST_DB_HOST` and
-`DARKSTAR_TEST_DB_PORT`. Database credentials come from `.env` or the corresponding
-`DB_USER`, `DB_PASSWORD` and `DB_NAME` environment variables. The tests are opt-in
-because they restart local services. They require the repository's Compose stack
-and are not intended for a shared or production deployment.
-
-### Combined unit, smoke and browser suite
-
 ```bash
 RUN_PLAYWRIGHT=1 python3 -m pytest
 ```

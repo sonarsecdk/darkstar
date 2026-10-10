@@ -31,6 +31,25 @@ def api_client(monkeypatch):
 AUTH_HEADERS = {"Authorization": "Bearer test-token"}
 
 
+def test_tenant_user_management_enforces_account_scope(api_client, monkeypatch):
+    calls = []
+
+    def restricted_update(**kwargs):
+        calls.append(kwargs)
+        raise PermissionError("This account must be managed by a platform administrator")
+
+    monkeypatch.setattr(webapp, "create_or_update_user", restricted_update)
+    response = api_client.post(
+        "/api/users",
+        headers=AUTH_HEADERS,
+        json={"email": "other@example.test", "password": "ChangedPassword1!", "role": "viewer"},
+    )
+
+    assert response.status_code == 403
+    assert calls[0]["restrict_to_org"] is True
+    assert calls[0]["org_db_name"] == "tenant_db"
+
+
 def test_vulnerability_routes_filter_group_and_detail(api_client, monkeypatch):
     filtered_call = {}
 

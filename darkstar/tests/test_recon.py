@@ -231,8 +231,12 @@ class TestWordPressDetector:
             # Test the run method with direct patching to avoid coroutine issues
             mock_check_domain = mocker.patch.object(WordPressDetector, "check_domain")
 
-            # Ensure the mock returns simple boolean values, not coroutines
-            mock_check_domain.side_effect = domain_results
+            # Workers may start in any order; associate each result with its
+            # domain instead of whichever thread happens to call the mock next.
+            results_by_domain = dict(zip(
+                ("example1.com", "example2.com", "example3.com"), domain_results
+            ))
+            mock_check_domain.side_effect = results_by_domain.__getitem__
 
             detector = WordPressDetector()
             result = detector.run(file_path)

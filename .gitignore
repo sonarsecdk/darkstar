@@ -1,6 +1,8 @@
 venv
 .venv
 .env
+creds.conf
+token.txt
 env
 
 darkstar-scanner-*.env

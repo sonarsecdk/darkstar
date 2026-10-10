@@ -780,28 +780,100 @@ def _public_user(row: dict | None) -> dict | None:
     }
 
 
-def _ensure_organization_record(cursor, org_name: str, password: str, role: str) -> str:
+class OrganizationAlreadyExistsError(ValueError):
+    """An organization name or its database identifier is already in use."""
+
+
+def _discard_new_org_database(cursor, org_db: str):
+    """DDL cannot be rolled back; remove only a database this request created."""
+    try:
+        cursor.execute(f"DROP DATABASE `{org_db}`")
+    except mysql.connector.Error:
+        logger.exception("Unable to clean up failed organization database %s", org_db)
+
+
+def _ensure_organization_record(
+    cursor, org_name: str, password: str, role: str, *, create_only: bool = False,
+) -> str:
     """Create a legacy organization registry row and tenant DB when missing."""
     org_db = normalize_org_name(org_name)
-    cursor.execute("SELECT org_db_name FROM organizations WHERE org_db_name = %s", (org_db,))
+    cursor.execute(
+        "SELECT org_db_name FROM organizations WHERE org_name = %s OR org_db_name = %s",
+        (org_name, org_db),
+    )
     row = cursor.fetchone()
-    if not row:
-        salt, digest = _hash_password(password)
-        created_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute(
-            """
-            INSERT INTO organizations
-                (org_name, org_db_name, password_salt, password_hash, role, last_login_at, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """,
-            (org_name, org_db, salt, digest, role, created_at, created_at),
-        )
+    if row and create_only:
+        raise OrganizationAlreadyExistsError("An organization with this name or database identifier already exists")
+    if row:
+        org_db = row["org_db_name"]
 
-    cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{org_db}`")
-    cursor.execute(f"USE `{org_db}`")
-    _apply_org_schema(cursor)
-    cursor.execute(f"USE `{os.environ.get('DB_NAME', 'darkstar')}`")
+    # CREATE without IF NOT EXISTS also arbitrates concurrent creation requests
+    # and prevents a new organization from adopting an existing tenant database.
+    try:
+        clause = "" if create_only else "IF NOT EXISTS "
+        cursor.execute(f"CREATE DATABASE {clause}`{org_db}`")
+    except mysql.connector.Error as exc:
+        if exc.errno == 1007:
+            raise OrganizationAlreadyExistsError("An organization with this database identifier already exists") from exc
+        raise
+
+    try:
+        cursor.execute(f"USE `{org_db}`")
+        _apply_org_schema(cursor)
+        registry_db = os.environ.get("DB_NAME", "darkstar").replace("`", "``")
+        cursor.execute(f"USE `{registry_db}`")
+        # Publish the registry row only after all schema DDL has succeeded.
+        # MariaDB implicitly commits transactions before executing DDL.
+        if not row:
+            salt, digest = _hash_password(password)
+            created_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute(
+                """
+                INSERT INTO organizations
+                    (org_name, org_db_name, password_salt, password_hash, role, last_login_at, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (org_name, org_db, salt, digest, role, None if create_only else created_at, created_at),
+            )
+    except Exception as exc:
+        if create_only:
+            _discard_new_org_database(cursor, org_db)
+        if isinstance(exc, mysql.connector.Error) and exc.errno == 1062:
+            raise OrganizationAlreadyExistsError("An organization with this name already exists") from exc
+        raise
     return org_db
+
+
+def create_organization(org_name: str) -> dict:
+    """Provision a new tenant using the same schema path as admin bootstrap."""
+    org_name = org_name.strip()
+    if not org_name:
+        raise ValueError("Organization name is required")
+    if len(org_name) > 100:
+        raise ValueError("Organization name must be at most 100 characters")
+    if not re.search(r"[a-zA-Z0-9]", org_name):
+        raise ValueError("Organization name must contain at least one letter a-z or number")
+    normalize_org_name(org_name)
+
+    with DatabaseConnectionManager() as connection:
+        cursor = connection.cursor(dictionary=True)
+        org_db = None
+        try:
+            _ensure_organizations_registry(cursor)
+            # New tenants use individual user memberships. Keep the required
+            # legacy password hash unguessable without issuing a shared login.
+            org_db = _ensure_organization_record(
+                cursor, org_name, secrets.token_urlsafe(32), "tenant_admin", create_only=True,
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            if org_db:
+                _discard_new_org_database(cursor, org_db)
+            raise
+        finally:
+            cursor.close()
+    return {"org_name": org_name, "org_db_name": org_db, "role": "tenant_admin"}
 
 
 def _membership_rows(cursor, user_id: int) -> list[dict]:

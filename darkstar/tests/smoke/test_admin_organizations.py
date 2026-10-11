@@ -14,7 +14,7 @@ def client(monkeypatch):
     monkeypatch.setattr(webapp, "record_audit_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         webapp, "authenticate_api_key",
-        lambda token: {"org_db_name": "org_home", "org_name": "Home", "role": token}
+        lambda token: {"org_id": 1, "org_db_name": "org_home", "org_name": "Home", "role": token}
         if token in webapp.ROLE_RANK else None,
     )
     with TestClient(webapp.app) as client:
@@ -64,6 +64,7 @@ def test_invalid_request_names_are_rejected(client, mocker, name):
     [
         (ValueError("Organization name is required"), 400, "Organization name is required"),
         (webapp.OrganizationAlreadyExistsError("Organization already exists"), 409, "Organization already exists"),
+        (webapp.OrganizationConflictError("Organization is busy"), 409, "Organization is busy"),
         (RuntimeError("private database connection details"), 503, "Organization provisioning failed"),
     ],
 )

@@ -638,12 +638,12 @@ def _ensure_organizations_registry(cursor):
     )
 
 
-def ensure_organization(org_name: str, password: str, create_missing: bool = False) -> tuple[str, bool]:
+def ensure_organization(org_name: str, password: str, create_missing: bool = False) -> tuple[str, bool, int]:
     """
     Ensure organization record and per-org database exist.
 
     Returns:
-        tuple[str, bool]: (normalized_org_db_name, created_now)
+        tuple[str, bool, int]: (org_db_name, created_now, organization_id)
     """
     org_db = normalize_org_name(org_name)
     created_now = False
@@ -654,17 +654,22 @@ def ensure_organization(org_name: str, password: str, create_missing: bool = Fal
 
         _ensure_organizations_registry(cursor)
 
-        _lock_organization(cursor, org_db)
         cursor.execute(
-            "SELECT org_db_name, password_salt, password_hash, role FROM organizations WHERE org_name = %s",
+            "SELECT id, org_db_name, password_salt, password_hash, role FROM organizations WHERE org_name = %s",
             (org_name,),
         )
         row = cursor.fetchone()
+        if row:
+            org_db = row["org_db_name"]
+        organization = _lock_organization(cursor, org_db)
+        if row and (not organization or organization["id"] != row["id"]):
+            raise OrganizationConflictError("Organization changed. Please try again.")
 
         if row:
             if not _verify_password(password, row["password_salt"], row["password_hash"]):
                 raise ValueError("Invalid organization credentials")
             org_db = row["org_db_name"]
+            organization_id = row["id"]
             cursor.execute(
                 "UPDATE organizations SET last_login_at = %s WHERE org_name = %s",
                 (created_at, org_name),
@@ -672,6 +677,8 @@ def ensure_organization(org_name: str, password: str, create_missing: bool = Fal
         else:
             if not create_missing:
                 raise ValueError("Organization does not exist")
+            if organization:
+                raise OrganizationConflictError("Organization changed. Please try again.")
             default_admin_org = os.environ.get("PLATFORM_ADMIN_ORG", "platform_admin")
             if org_name.strip().lower() == default_admin_org.lower():
                 raise ValueError("Platform admin organization cannot be created through legacy login")
@@ -682,6 +689,7 @@ def ensure_organization(org_name: str, password: str, create_missing: bool = Fal
                 (org_name, org_db, salt, digest, role, created_at, created_at),
             )
             created_now = True
+            organization_id = cursor.lastrowid
 
         cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{org_db}`")
         cursor.execute(f"USE `{org_db}`")
@@ -690,7 +698,7 @@ def ensure_organization(org_name: str, password: str, create_missing: bool = Fal
         connection.commit()
         cursor.close()
 
-    return org_db, created_now
+    return org_db, created_now, organization_id
 
 
 def register_cli_organization(org_name: str) -> tuple[str, str | None]:
@@ -716,15 +724,19 @@ def register_cli_organization(org_name: str) -> tuple[str, str | None]:
         cursor = connection.cursor(dictionary=True)
         _ensure_organizations_registry(cursor)
 
-        _lock_organization(cursor, org_db)
         cursor.execute(
-            "SELECT org_db_name FROM organizations WHERE org_name = %s OR org_db_name = %s",
+            "SELECT id, org_db_name FROM organizations WHERE org_name = %s OR org_db_name = %s",
             (org_name, org_db),
         )
         row = cursor.fetchone()
-
         if row:
             org_db = row["org_db_name"]
+        organization = _lock_organization(cursor, org_db)
+        if row and (not organization or organization["id"] != row["id"]):
+            raise OrganizationConflictError("Organization changed. Please try again.")
+
+        if organization:
+            org_db = organization["org_db_name"]
         else:
             generated_password = secrets.token_urlsafe(18)
             salt, digest = _hash_password(generated_password)
@@ -938,6 +950,7 @@ def create_organization(org_name: str) -> dict:
         org_db = None
         try:
             _ensure_organizations_registry(cursor)
+            _lock_organization(cursor, normalize_org_name(org_name))
             # New tenants use individual user memberships. Keep the required
             # legacy password hash unguessable without issuing a shared login.
             org_db = _ensure_organization_record(
@@ -963,6 +976,7 @@ def _membership_rows(cursor, user_id: int) -> list[dict]:
             m.user_id,
             m.org_db_name,
             m.role,
+            o.id AS org_id,
             o.org_name,
             o.mfa_required,
             o.sso_required,
@@ -1067,7 +1081,7 @@ def get_user_membership(user_id: int, org_db_name: str) -> dict | None:
         connection.commit()
         cursor.execute(
             """
-            SELECT m.id, m.user_id, m.org_db_name, m.role, o.org_name, o.mfa_required, o.sso_required
+            SELECT m.id, m.user_id, m.org_db_name, m.role, o.id AS org_id, o.org_name, o.mfa_required, o.sso_required
             FROM organization_memberships m
             JOIN organizations o ON o.org_db_name = m.org_db_name
             WHERE m.user_id = %s AND m.org_db_name = %s
@@ -1214,6 +1228,7 @@ def create_or_update_user(
     role: str,
     *,
     restrict_to_org: bool,
+    expected_org_id: int | None = None,
 ) -> dict:
     """Create/update a user and upsert their organization membership."""
     email = _normalize_email(email)
@@ -1227,8 +1242,11 @@ def create_or_update_user(
     with DatabaseConnectionManager() as connection:
         cursor = connection.cursor(dictionary=True)
         _ensure_organizations_registry(cursor)
-        if not _lock_organization(cursor, org_db_name):
+        organization = _lock_organization(cursor, org_db_name)
+        if not organization:
             raise ValueError("Organization no longer exists")
+        if expected_org_id is not None and organization["id"] != expected_org_id:
+            raise OrganizationConflictError("Organization changed. Please sign in again.")
         cursor.execute("SELECT id FROM users WHERE email = %s FOR UPDATE", (email,))
         existing = cursor.fetchone()
         if existing:
@@ -3569,7 +3587,7 @@ def get_organization_auth_settings(org_db_name: str, include_secrets: bool = Fal
         connection.commit()
         cursor.execute(
             """
-            SELECT org_name, org_db_name, role, mfa_required, sso_required, mfa_secret, mfa_enabled,
+            SELECT id AS org_id, org_name, org_db_name, role, mfa_required, sso_required, mfa_secret, mfa_enabled,
                    sso_enabled, sso_issuer, sso_client_id, sso_client_secret, sso_allowed_domain
             FROM organizations
             WHERE org_db_name = %s
@@ -3594,7 +3612,7 @@ def get_sso_settings_by_org_name(org_name: str, include_secret: bool = False) ->
         connection.commit()
         cursor.execute(
             """
-            SELECT org_name, org_db_name, role, sso_enabled, sso_issuer,
+            SELECT id AS org_id, org_name, org_db_name, role, sso_enabled, sso_issuer,
                    sso_client_id, sso_client_secret, sso_allowed_domain
             FROM organizations
             WHERE org_name = %s
@@ -3695,7 +3713,9 @@ def _hash_api_key(api_key: str) -> str:
     ).hex()
 
 
-def create_api_key(org_db_name: str, name: str, role: str = "tenant_admin") -> dict:
+def create_api_key(
+    org_db_name: str, name: str, role: str = "tenant_admin", *, expected_org_id: int | None = None,
+) -> dict:
     """Create a one-time visible API key for REST API access."""
     api_key = f"dstar_{secrets.token_urlsafe(32)}"
     key_prefix = api_key[:14]
@@ -3703,8 +3723,11 @@ def create_api_key(org_db_name: str, name: str, role: str = "tenant_admin") -> d
     with DatabaseConnectionManager() as connection:
         cursor = connection.cursor(dictionary=True)
         _ensure_organizations_registry(cursor)
-        if not _lock_organization(cursor, org_db_name):
+        organization = _lock_organization(cursor, org_db_name)
+        if not organization:
             raise ValueError("Organization no longer exists")
+        if expected_org_id is not None and organization["id"] != expected_org_id:
+            raise OrganizationConflictError("Organization changed. Please sign in again.")
         cursor.execute(
             """
             INSERT INTO api_keys (org_db_name, name, key_prefix, key_hash, role, created_at)
@@ -3779,7 +3802,7 @@ def authenticate_api_key(api_key: str) -> dict | None:
         connection.commit()
         cursor.execute(
             """
-            SELECT k.id, k.org_db_name, k.role, k.key_hash, o.org_name
+            SELECT k.id, k.org_db_name, k.role, k.key_hash, o.id AS org_id, o.org_name
             FROM api_keys k
             JOIN organizations o ON o.org_db_name = k.org_db_name
             WHERE (k.key_hash = %s OR k.key_hash = SHA2(%s, 256))

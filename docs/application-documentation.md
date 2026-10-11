@@ -77,8 +77,9 @@ The API equivalent is `POST /api/admin/organizations` with JSON
 `{"name": "Example Organization"}`. It requires `platform_admin` and returns
 HTTP 201 with `{"ok": true, "organization": {...}}` only after initializing the
 tenant database and schema. Blank or invalid names are rejected. Duplicate names
-and names mapping to an existing database identifier return HTTP 409; provisioning
-failures return HTTP 503. Display names are limited to 100 characters and must
+and names mapping to an existing database identifier return HTTP 409. Concurrent
+lifecycle changes also return 409 and can be retried. Provisioning failures
+return HTTP 503. Display names are limited to 100 characters and must
 map to the existing 3–64 character database identifier format. If creation fails
 after a new database was allocated, Darkstar attempts to remove that partial
 database and does not publish the organization in the registry. A process crash

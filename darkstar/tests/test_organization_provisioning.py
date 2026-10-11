@@ -17,6 +17,7 @@ def organization_database(mocker):
     connection.cursor.return_value = cursor
     manager = mocker.patch.object(db, "DatabaseConnectionManager", return_value=nullcontext(connection))
     mocker.patch.object(db, "_ensure_organizations_registry")
+    mocker.patch.object(db, "_lock_organization")
     schema = mocker.patch.object(db, "_apply_org_schema")
     return cursor, connection, manager, schema
 

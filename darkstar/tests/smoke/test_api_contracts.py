@@ -17,6 +17,7 @@ def api_client(monkeypatch):
         webapp,
         "authenticate_api_key",
         lambda token: {
+            "org_id": 7,
             "org_db_name": "tenant_db",
             "org_name": "Acme Security",
             "role": "tenant_admin",
@@ -48,6 +49,7 @@ def test_tenant_user_management_enforces_account_scope(api_client, monkeypatch):
     assert response.status_code == 403
     assert calls[0]["restrict_to_org"] is True
     assert calls[0]["org_db_name"] == "tenant_db"
+    assert calls[0]["expected_org_id"] == 7
 
 
 @pytest.mark.parametrize("path", ["/api/users", "/api/admin/users"])
@@ -55,7 +57,7 @@ def test_platform_user_management_explicitly_allows_shared_accounts(api_client, 
     monkeypatch.setattr(
         webapp,
         "authenticate_api_key",
-        lambda token: {"org_db_name": "tenant_db", "org_name": "Acme", "role": "platform_admin"},
+        lambda token: {"org_id": 7, "org_db_name": "tenant_db", "org_name": "Acme", "role": "platform_admin"},
     )
     update = mocker.patch.object(webapp, "create_or_update_user", return_value={"id": 7})
     response = api_client.post(
@@ -68,7 +70,20 @@ def test_platform_user_management_explicitly_allows_shared_accounts(api_client, 
     update.assert_called_once_with(
         email="shared@example.test", password=None, display_name=None,
         org_db_name="tenant_db", role="viewer", restrict_to_org=False,
+        **({"expected_org_id": 7} if path == "/api/users" else {}),
     )
+
+
+@pytest.mark.parametrize("path", ["/api/users", "/api/api-keys"])
+def test_credential_writes_keep_authenticated_organization_identity(api_client, mocker, path):
+    helper = "create_or_update_user" if path == "/api/users" else "create_api_key"
+    create = mocker.patch.object(webapp, helper, side_effect=webapp.OrganizationConflictError("Organization changed"))
+    body = {"email": "user@example.test"} if path == "/api/users" else {"name": "Test key"}
+
+    response = api_client.post(path, headers=AUTH_HEADERS, json=body)
+
+    assert response.status_code == 409
+    assert create.call_args.kwargs["expected_org_id"] == 7
 
 
 def test_vulnerability_routes_filter_group_and_detail(api_client, monkeypatch):

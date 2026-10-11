@@ -595,6 +595,7 @@ def _ensure_organizations_registry(cursor):
             id INT AUTO_INCREMENT PRIMARY KEY,
             email VARCHAR(255) NOT NULL UNIQUE,
             display_name VARCHAR(255) DEFAULT NULL,
+            theme VARCHAR(32) NOT NULL DEFAULT 'darkstar',
             password_salt VARCHAR(64) NOT NULL,
             password_hash VARCHAR(128) NOT NULL,
             mfa_secret VARCHAR(64) DEFAULT NULL,
@@ -605,6 +606,7 @@ def _ensure_organizations_registry(cursor):
         )
         """
     )
+    cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS theme VARCHAR(32) NOT NULL DEFAULT 'darkstar'")
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS organization_memberships (
@@ -774,6 +776,7 @@ def _public_user(row: dict | None) -> dict | None:
         "id": row.get("id"),
         "email": row.get("email"),
         "display_name": row.get("display_name"),
+        "theme": row.get("theme") or "darkstar",
         "mfa_enabled": bool(row.get("mfa_enabled")),
         "last_login_at": row.get("last_login_at"),
         "created_at": row.get("created_at"),
@@ -927,6 +930,17 @@ def get_user_membership(user_id: int, org_db_name: str) -> dict | None:
         row = cursor.fetchone()
         cursor.close()
         return row
+
+
+def update_user_theme(user_id: int, theme: str) -> dict:
+    """Save an account's appearance across all of its organizations."""
+    with DatabaseConnectionManager() as connection:
+        cursor = connection.cursor(dictionary=True)
+        _ensure_organizations_registry(cursor)
+        cursor.execute("UPDATE users SET theme = %s WHERE id = %s", (theme, user_id))
+        connection.commit()
+        cursor.close()
+    return get_user_by_id(user_id) or {}
 
 
 def update_user_mfa_secret(user_id: int, mfa_secret: str | None, enabled: bool) -> dict:

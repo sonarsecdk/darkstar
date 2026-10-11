@@ -8,6 +8,7 @@ const state = {
     orgDb: document.body.dataset.orgDb || "",
     role: document.body.dataset.role || "",
     organizations: [],
+    organizationCreationPending: false,
     currentTab: "dashboard",
     vulnFilters: {
         severity: "",
@@ -2361,7 +2362,7 @@ async function loadM365View() {
 // OVERSIGHT TAB
 // ============================================================================
 
-async function loadOversightView() {
+async function loadOversightView({ propagateError = false } = {}) {
     try {
         const result = await requestJson("/api/admin/overview");
         const totals = result.totals || {};
@@ -2383,8 +2384,82 @@ async function loadOversightView() {
         `).join("") || '<tr><td colspan="8">No tenant data available.</td></tr>';
     } catch (error) {
         console.error("Failed to load oversight:", error);
+        if (propagateError) throw error;
     }
 }
+
+function toggleOrganizationForm(open) {
+    document.getElementById("createOrganizationForm").classList.toggle("hidden", !open);
+    document.getElementById("newOrganizationBtn").setAttribute("aria-expanded", String(open));
+    if (open) document.getElementById("organizationNameInput").focus();
+    else document.getElementById("newOrganizationBtn").focus();
+}
+
+document.getElementById("newOrganizationBtn").addEventListener("click", () => {
+    if (state.role !== "platform_admin" || state.organizationCreationPending) return;
+    document.getElementById("createOrganizationForm").reset();
+    document.getElementById("createOrganizationMessage").textContent = "";
+    toggleOrganizationForm(true);
+});
+
+document.getElementById("cancelOrganizationBtn").addEventListener("click", () => {
+    if (!state.organizationCreationPending) toggleOrganizationForm(false);
+});
+
+document.getElementById("createOrganizationForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (state.role !== "platform_admin" || state.organizationCreationPending) return;
+    const form = event.currentTarget;
+    const input = document.getElementById("organizationNameInput");
+    const message = document.getElementById("createOrganizationMessage");
+    const button = document.getElementById("createOrganizationBtn");
+    const name = input.value.trim();
+    message.className = "form-message error";
+    if (!name) {
+        message.textContent = "Organization name is required.";
+        input.focus();
+        return;
+    }
+    state.organizationCreationPending = true;
+    form.setAttribute("aria-busy", "true");
+    form.querySelectorAll("input, button").forEach(el => { el.disabled = true; });
+    document.getElementById("newOrganizationBtn").disabled = true;
+    button.textContent = "Creating…";
+    message.className = "form-message";
+    message.textContent = "Creating organization…";
+    let created = false;
+    try {
+        const result = await requestJson("/api/admin/organizations", {
+            method: "POST",
+            body: JSON.stringify({ name }),
+        });
+        created = true;
+        // Make the selector usable even if a subsequent refresh is interrupted.
+        const organizations = state.organizations.filter(org =>
+            (org.org_db_name || org.org_db) !== result.organization.org_db_name);
+        renderTenantSwitch({ organizations: [...organizations, result.organization] });
+        form.reset();
+        toggleOrganizationForm(false);
+        await Promise.all([
+            requestJson("/api/me").then(renderTenantSwitch),
+            loadOversightView({ propagateError: true }),
+        ]);
+        message.className = "form-message success";
+        message.textContent = `Organization “${result.organization.org_name}” created. Assign users in Settings.`;
+    } catch (error) {
+        message.className = "form-message error";
+        message.textContent = created
+            ? "Organization created, but the list could not be refreshed. Reload the page to refresh it."
+            : error.message;
+    } finally {
+        state.organizationCreationPending = false;
+        form.setAttribute("aria-busy", "false");
+        form.querySelectorAll("input, button").forEach(el => { el.disabled = false; });
+        document.getElementById("newOrganizationBtn").disabled = false;
+        button.textContent = "Create organization";
+        if (created) document.getElementById("newOrganizationBtn").focus();
+    }
+});
 
 // ============================================================================
 // DEBUG PANEL

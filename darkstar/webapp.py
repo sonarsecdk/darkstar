@@ -41,6 +41,7 @@ from dotenv import load_dotenv
 _event_loop = None
 
 from .core.db_helper import (
+    OrganizationAlreadyExistsError,
     authenticate_api_key,
     authenticate_endpoint_agent,
     authenticate_scanner_node,
@@ -53,6 +54,7 @@ from .core.db_helper import (
     create_endpoint_enrollment_token,
     create_scanner_node,
     create_or_update_user,
+    create_organization,
     create_scan_record,
     create_scan_schedule,
     delete_user,
@@ -422,6 +424,10 @@ class AdminUserRequest(BaseModel):
     display_name: str | None = Field(default=None, max_length=255)
     org_db: str = Field(min_length=3, max_length=64)
     role: str = Field(default="viewer", max_length=32)
+
+
+class CreateOrganizationRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
 
 
 class OrgUserRequest(BaseModel):
@@ -3313,6 +3319,31 @@ def export_vulnerabilities_pdf(request: Request):
 def admin_organizations(request: Request):
     _require_platform_admin(request)
     return {"items": list_organizations()}
+
+
+@app.post("/api/admin/organizations", status_code=201)
+def admin_create_organization(request: Request, body: CreateOrganizationRequest):
+    _require_platform_admin(request)
+    try:
+        organization = create_organization(body.name)
+    except OrganizationAlreadyExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Organization provisioning failed")
+        raise HTTPException(
+            status_code=503,
+            detail="Organization provisioning failed. Please try again or contact your platform administrator.",
+        ) from exc
+    record_audit_event(
+        organization["org_db_name"],
+        "organization.created",
+        actor=request.session.get("user_email") or request.session.get("organization") or "api_key",
+        entity_type="organization",
+        entity_id=organization["org_db_name"],
+    )
+    return {"ok": True, "organization": organization}
 
 
 @app.get("/api/admin/auth/policy")

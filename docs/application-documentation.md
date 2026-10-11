@@ -67,6 +67,24 @@ Vulnerability Disclosure process.
 | `tenant_admin` | Manage tenant settings, users, API keys, endpoint tokens and scanner nodes. |
 | `platform_admin` | Platform-wide tenant overview and administration. |
 
+Platform administrators can create an organization from **Oversight → New
+organization**. Enter a name and select **Create organization**. The organization
+appears in the overview and tenant selector immediately, without another login.
+Use **Settings → Users & Roles** to create or assign its tenant administrators and
+other users. Creating an organization does not issue a shared organization login.
+
+The API equivalent is `POST /api/admin/organizations` with JSON
+`{"name": "Example Organization"}`. It requires `platform_admin` and returns
+HTTP 201 with `{"ok": true, "organization": {...}}` only after initializing the
+tenant database and schema. Blank or invalid names are rejected. Duplicate names
+and names mapping to an existing database identifier return HTTP 409; provisioning
+failures return HTTP 503. Display names are limited to 100 characters and must
+map to the existing 3–64 character database identifier format. If creation fails
+after a new database was allocated, Darkstar attempts to remove that partial
+database and does not publish the organization in the registry. A process crash
+or loss of database connectivity can prevent cleanup; check the server logs and
+remove the unregistered partial database before retrying that name.
+
 Tenant administrators can create users and manage accounts belonging exclusively
 to their tenant. Accounts shared across tenants and platform administrator
 accounts must be managed by a platform administrator, because passwords and

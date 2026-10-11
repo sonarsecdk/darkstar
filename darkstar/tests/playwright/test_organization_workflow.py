@@ -189,6 +189,30 @@ def test_delete_requires_confirmation_and_refreshes_the_list(organization_page):
     assert state["deletions"] == [2]
 
 
+def test_organization_name_is_literal_text_in_delete_button(organization_page):
+    from playwright.sync_api import expect
+
+    page, state, _finish, base_url = organization_page
+    name = 'Acme " onmouseover="window.organizationNameExecuted = true" data-name="<test> & Partners\''
+    state["organizations"].append({"id": 2, "org_name": name, "org_db_name": "org_quoted"})
+    open_oversight(page, base_url)
+    button = page.get_by_role("button", name=f"Delete {name}", exact=True)
+
+    expect(button).to_have_attribute("data-org-name", name)
+    expect(button).to_have_attribute("aria-label", f"Delete {name}")
+    assert button.get_attribute("onmouseover") is None
+    button.hover()
+    assert page.evaluate("window.organizationNameExecuted === undefined")
+
+    def cancel(dialog):
+        assert name in dialog.message
+        dialog.dismiss()
+
+    page.once("dialog", cancel)
+    button.click()
+    assert state["deletions"] == []
+
+
 @pytest.mark.parametrize("error", [(409, "Stop scans first"), (503, "Organization deletion failed")])
 def test_failed_deletion_keeps_the_organization_available(organization_page, error):
     from playwright.sync_api import expect

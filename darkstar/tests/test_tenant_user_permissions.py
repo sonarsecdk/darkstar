@@ -11,11 +11,12 @@ pytestmark = pytest.mark.unit
 @pytest.fixture()
 def user_database(mocker):
     cursor = mocker.Mock()
-    cursor.fetchone.side_effect = [{"id": 7}, {"org_db_name": "org_alpha"}]
+    cursor.fetchone.side_effect = [{"id": 7}]
     connection = mocker.Mock()
     connection.cursor.return_value = cursor
     mocker.patch.object(db_helper, "DatabaseConnectionManager", return_value=nullcontext(connection))
     mocker.patch.object(db_helper, "_ensure_organizations_registry")
+    mocker.patch.object(db_helper, "_lock_organization", return_value={"org_db_name": "org_alpha"})
     mocker.patch.object(db_helper, "get_user_by_id", return_value={"id": 7})
     return cursor, connection
 
@@ -50,7 +51,7 @@ def test_tenant_cannot_change_or_assign_global_accounts(user_database, membershi
 @pytest.mark.parametrize("new_user", [False, True])
 def test_tenant_can_manage_its_own_users(user_database, new_user):
     cursor, connection = user_database
-    cursor.fetchone.side_effect = [None if new_user else {"id": 7}, {"org_db_name": "org_alpha"}]
+    cursor.fetchone.side_effect = [None if new_user else {"id": 7}]
     cursor.fetchall.return_value = [{"org_db_name": "org_alpha", "role": "viewer"}]
 
     result = db_helper.create_or_update_user(

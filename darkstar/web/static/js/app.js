@@ -9,6 +9,7 @@ const state = {
     role: document.body.dataset.role || "",
     organizations: [],
     organizationCreationPending: false,
+    organizationDeletionPending: false,
     currentTab: "dashboard",
     vulnFilters: {
         severity: "",
@@ -2379,12 +2380,56 @@ async function loadOversightView({ propagateError = false } = {}) {
                 <td>${escapeHtml(tenant.critical || 0)}</td>
                 <td>${escapeHtml(tenant.average_priority || 0)}</td>
                 <td>${escapeHtml(tenant.max_priority || 0)}</td>
-                <td><button type="button" class="btn-secondary btn-sm switch-tenant-btn" data-org-db="${escapeHtml(tenant.org_db || "")}">Open</button></td>
+                <td>
+                    <button type="button" class="btn-secondary btn-sm switch-tenant-btn" data-org-db="${escapeHtml(tenant.org_db || "")}">Open</button>
+                    ${tenant.id && tenant.role !== "platform_admin" ? `
+                        <button type="button" class="btn-danger btn-sm delete-organization-btn"
+                            data-org-id="${escapeHtml(tenant.id)}" data-org-db="${escapeHtml(tenant.org_db)}"
+                            data-org-name="${escapeHtml(tenant.organization)}" aria-label="Delete ${escapeHtml(tenant.organization)}"
+                            ${tenant.org_db === state.orgDb ? 'disabled title="Switch to another organization before deleting this one."' : ""}>Delete</button>
+                    ` : ""}
+                </td>
             </tr>
         `).join("") || '<tr><td colspan="8">No tenant data available.</td></tr>';
     } catch (error) {
         console.error("Failed to load oversight:", error);
         if (propagateError) throw error;
+    }
+}
+
+async function deleteOrganization(button) {
+    if (state.role !== "platform_admin" || state.organizationDeletionPending || button.disabled) return;
+    const name = button.dataset.orgName;
+    if (!window.confirm(`Permanently delete organization “${name}”? Its findings, scans, settings and memberships will be removed. User accounts will be kept. This cannot be undone.`)) return;
+    const message = document.getElementById("organizationMessage");
+    state.organizationDeletionPending = true;
+    button.disabled = true;
+    button.textContent = "Deleting…";
+    message.className = "form-message";
+    message.textContent = `Deleting organization “${name}”…`;
+    let deleted = false;
+    try {
+        await requestJson(`/api/admin/organizations/${encodeURIComponent(button.dataset.orgId)}`, { method: "DELETE" });
+        deleted = true;
+        renderTenantSwitch({ organizations: state.organizations.filter(org =>
+            (org.org_db_name || org.org_db) !== button.dataset.orgDb) });
+        button.closest("tr").remove();
+        await Promise.all([
+            requestJson("/api/me").then(renderTenantSwitch),
+            loadOversightView({ propagateError: true }),
+        ]);
+        message.className = "form-message success";
+        message.textContent = `Organization “${name}” deleted.`;
+        document.getElementById("newOrganizationBtn").focus();
+    } catch (error) {
+        message.className = "form-message error";
+        message.textContent = deleted
+            ? "Organization deleted, but the list could not be refreshed. Reload the page to refresh it."
+            : error.message;
+    } finally {
+        state.organizationDeletionPending = false;
+        button.disabled = false;
+        button.textContent = "Delete";
     }
 }
 
@@ -2398,7 +2443,7 @@ function toggleOrganizationForm(open) {
 document.getElementById("newOrganizationBtn").addEventListener("click", () => {
     if (state.role !== "platform_admin" || state.organizationCreationPending) return;
     document.getElementById("createOrganizationForm").reset();
-    document.getElementById("createOrganizationMessage").textContent = "";
+    document.getElementById("organizationMessage").textContent = "";
     toggleOrganizationForm(true);
 });
 
@@ -2411,7 +2456,7 @@ document.getElementById("createOrganizationForm").addEventListener("submit", asy
     if (state.role !== "platform_admin" || state.organizationCreationPending) return;
     const form = event.currentTarget;
     const input = document.getElementById("organizationNameInput");
-    const message = document.getElementById("createOrganizationMessage");
+    const message = document.getElementById("organizationMessage");
     const button = document.getElementById("createOrganizationBtn");
     const name = input.value.trim();
     message.className = "form-message error";
@@ -2999,6 +3044,12 @@ document.addEventListener("click", async (event) => {
     const switchTenantBtn = event.target.closest(".switch-tenant-btn");
     if (switchTenantBtn) {
         await switchTenant(switchTenantBtn.dataset.orgDb);
+        return;
+    }
+
+    const deleteOrganizationBtn = event.target.closest(".delete-organization-btn");
+    if (deleteOrganizationBtn) {
+        await deleteOrganization(deleteOrganizationBtn);
         return;
     }
 

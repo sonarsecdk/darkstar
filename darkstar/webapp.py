@@ -42,6 +42,7 @@ _event_loop = None
 
 from .core.db_helper import (
     OrganizationAlreadyExistsError,
+    OrganizationConflictError,
     authenticate_api_key,
     authenticate_endpoint_agent,
     authenticate_scanner_node,
@@ -58,6 +59,7 @@ from .core.db_helper import (
     create_scan_record,
     create_scan_schedule,
     delete_user,
+    delete_organization,
     delete_endpoint_agent,
     delete_scan_schedule,
     delete_revoked_scanner_node,
@@ -77,6 +79,7 @@ from .core.db_helper import (
     get_m365_secure_score,
     get_notification_settings,
     get_organization_auth_settings,
+    get_organization_id,
     get_organization_role,
     get_attack_surface_overview,
     get_oversight_summary,
@@ -584,6 +587,12 @@ def _extract_bearer_token(request: Request) -> str | None:
 def _get_org_db(request: Request) -> str:
     org_db = request.session.get("org_db")
     if org_db:
+        if getattr(request.state, "validated_org_db", None) != org_db:
+            organization_id = get_organization_id(org_db)
+            if not organization_id or request.session.get("org_id") != organization_id:
+                request.session.clear()
+                raise HTTPException(status_code=401, detail="Organization is no longer available. Please sign in again.")
+            request.state.validated_org_db = org_db
         return org_db
 
     token = _extract_bearer_token(request)
@@ -860,6 +869,7 @@ def _finish_user_login(request: Request, user: dict, membership: dict, auth_meth
     request.session["user_email"] = user["email"]
     request.session["organization"] = membership["org_name"]
     request.session["org_db"] = membership["org_db_name"]
+    request.session["org_id"] = get_organization_id(membership["org_db_name"])
     request.session["role"] = membership["role"]
     request.session["auth_method"] = auth_method
     mark_user_login(user["id"])
@@ -1080,25 +1090,28 @@ def _queue_scan(org_db: str, body: ScanStartRequest, schedule_id: int | None = N
     targets = _normalize_scan_targets(body.targets)
     body.targets = targets
     scan_name = body.scan_name or f"Scan {body.mode or body.scanner}"
-    scan_id = create_scan_record(
-        org_db,
-        scan_name=scan_name,
-        scan_mode=str(body.mode or body.scanner),
-        targets=targets,
-    )
-    payload = body.dict()
-    scanner = body.scanner if body.scanner else None
-    enqueue_scanner_job(
-        org_db,
-        scan_id,
-        scan_name=scan_name,
-        scan_mode=str(body.mode or body.scanner),
-        scanner=scanner,
-        targets=targets,
-        payload=payload,
-        schedule_id=schedule_id,
-        preferred_node_id=body.preferred_node_id,
-    )
+    try:
+        scan_id = create_scan_record(
+            org_db,
+            scan_name=scan_name,
+            scan_mode=str(body.mode or body.scanner),
+            targets=targets,
+        )
+        payload = body.dict()
+        scanner = body.scanner if body.scanner else None
+        enqueue_scanner_job(
+            org_db,
+            scan_id,
+            scan_name=scan_name,
+            scan_mode=str(body.mode or body.scanner),
+            scanner=scanner,
+            targets=targets,
+            payload=payload,
+            schedule_id=schedule_id,
+            preferred_node_id=body.preferred_node_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if body.preferred_node_id:
         insert_scan_log(org_db, scan_id, f"Queued for selected scanner appliance {body.preferred_node_id}", "info")
     else:
@@ -1448,6 +1461,13 @@ def nlnet_logo():
 @app.get("/api/me")
 def me(request: Request):
     org_db = request.session.get("org_db")
+    if org_db:
+        try:
+            _get_org_db(request)
+        except HTTPException as exc:
+            if exc.status_code != 401:
+                raise
+            return {"authenticated": False}
     if not org_db:
         token = _extract_bearer_token(request)
         api_context = authenticate_api_key(token) if token else None
@@ -1544,6 +1564,7 @@ def login(body: LoginRequest, request: Request):
     )
     request.session["organization"] = body.organization
     request.session["org_db"] = org_db
+    request.session["org_id"] = get_organization_id(org_db)
     request.session["role"] = get_organization_role(org_db)
     request.session["auth_method"] = "password"
     return {
@@ -1599,6 +1620,7 @@ def verify_mfa(body: MfaVerifyRequest, request: Request):
     request.session.clear()
     request.session["organization"] = pending["organization"]
     request.session["org_db"] = pending["org_db"]
+    request.session["org_id"] = get_organization_id(pending["org_db"])
     request.session["role"] = get_organization_role(pending["org_db"])
     request.session["auth_method"] = "password_mfa"
     mark_organization_login(pending["org_db"])
@@ -1861,6 +1883,7 @@ def sso_callback(request: Request, code: str | None = None, state: str | None = 
     request.session.clear()
     request.session["organization"] = settings["org_name"]
     request.session["org_db"] = settings["org_db_name"]
+    request.session["org_id"] = get_organization_id(settings["org_db_name"])
     request.session["role"] = settings.get("role") or get_organization_role(settings["org_db_name"])
     request.session["auth_method"] = "sso"
     request.session["sso_subject"] = claims.get("sub")
@@ -1882,7 +1905,10 @@ def create_rest_api_key(request: Request, body: ApiKeyRequest):
     role = body.role if body.role in ROLE_RANK else "security_analyst"
     if _role_rank(role) > _role_rank(_get_role(request)):
         raise HTTPException(status_code=403, detail="Cannot create an API key with a higher role than your own")
-    return create_api_key(org_db, body.name, role=role)
+    try:
+        return create_api_key(org_db, body.name, role=role)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.delete("/api/api-keys/{key_id}")
@@ -3346,6 +3372,32 @@ def admin_create_organization(request: Request, body: CreateOrganizationRequest)
     return {"ok": True, "organization": organization}
 
 
+@app.delete("/api/admin/organizations/{organization_id}")
+def admin_delete_organization(request: Request, organization_id: int):
+    _require_platform_admin(request)
+    org_db = _get_org_db(request)
+    try:
+        organization = delete_organization(organization_id, active_org_db=org_db)
+    except OrganizationConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Organization deletion failed")
+        raise HTTPException(status_code=503, detail="Organization deletion failed. Please retry or contact your platform administrator.") from exc
+    if not organization:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    record_audit_event(
+        org_db,
+        "organization.deleted",
+        actor=request.session.get("user_email") or request.session.get("organization") or "api_key",
+        entity_type="organization",
+        entity_id=organization["org_db_name"],
+        metadata={"org_name": organization["org_name"]},
+    )
+    return {"ok": True}
+
+
 @app.get("/api/admin/auth/policy")
 def admin_auth_policy(request: Request):
     _require_platform_admin(request)
@@ -3413,8 +3465,12 @@ def admin_overview(request: Request):
 @app.websocket("/ws/scan/{scan_id}")
 async def websocket_endpoint(websocket: WebSocket, scan_id: int):
     """WebSocket endpoint for real-time scan debug output."""
-    org_db = getattr(websocket, "session", {}).get("org_db")
-    if not org_db or not get_scan_record(org_db, scan_id):
+    try:
+        org_db = _get_org_db(websocket)
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
+    if not get_scan_record(org_db, scan_id):
         await websocket.close(code=1008)
         return
     await manager.connect(websocket, scan_id)

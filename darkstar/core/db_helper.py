@@ -654,6 +654,7 @@ def ensure_organization(org_name: str, password: str, create_missing: bool = Fal
 
         _ensure_organizations_registry(cursor)
 
+        _lock_organization(cursor, org_db)
         cursor.execute(
             "SELECT org_db_name, password_salt, password_hash, role FROM organizations WHERE org_name = %s",
             (org_name,),
@@ -782,6 +783,82 @@ def _public_user(row: dict | None) -> dict | None:
 
 class OrganizationAlreadyExistsError(ValueError):
     """An organization name or its database identifier is already in use."""
+
+
+class OrganizationConflictError(ValueError):
+    """An organization cannot be changed while it is in use."""
+
+
+def _lock_organization(cursor, org_db: str) -> dict | None:
+    """Serialize tenant lifecycle changes until the connection closes."""
+    # Unlike row locks, a named lock survives the implicit commit in DROP DATABASE.
+    lock_name = hashlib.sha256(f"{os.environ.get('DB_NAME', 'darkstar')}:{org_db}".encode()).hexdigest()
+    cursor.execute("SELECT GET_LOCK(%s, 5) AS acquired", (lock_name,))
+    if (cursor.fetchone() or {}).get("acquired") != 1:
+        raise OrganizationConflictError("Organization is busy. Please try again.")
+    cursor.execute(
+        "SELECT id, org_name, org_db_name, role FROM organizations WHERE org_db_name = %s FOR UPDATE",
+        (org_db,),
+    )
+    return cursor.fetchone()
+
+
+def delete_organization(organization_id: int, *, active_org_db: str) -> dict | None:
+    """Delete an idle tenant and its registry records, preserving user accounts."""
+    with DatabaseConnectionManager() as connection:
+        cursor = connection.cursor(dictionary=True)
+        try:
+            cursor.execute("SELECT org_db_name FROM organizations WHERE id = %s", (organization_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            org_db = row["org_db_name"]
+            if not ORG_IDENTIFIER_RE.fullmatch(org_db):
+                raise ValueError("Invalid organization database identifier")
+            organization = _lock_organization(cursor, org_db)
+            # A concurrent deletion/recreation must not redirect this request to a new tenant.
+            if not organization or organization["id"] != organization_id:
+                return None
+            if (
+                organization["role"] == "platform_admin"
+                or org_db == normalize_org_name(os.environ.get("PLATFORM_ADMIN_ORG", "platform_admin"))
+                or org_db == os.environ.get("DB_NAME", "darkstar")
+            ):
+                raise OrganizationConflictError("The platform organization cannot be deleted.")
+            if org_db == active_org_db:
+                raise OrganizationConflictError("Switch to another organization before deleting this one.")
+            cursor.execute(
+                "SELECT id FROM organization_memberships WHERE org_db_name = %s AND role = 'platform_admin' LIMIT 1 FOR UPDATE",
+                (org_db,),
+            )
+            if cursor.fetchone():
+                raise OrganizationConflictError("An organization with platform administrators cannot be deleted.")
+            cursor.execute(
+                "SELECT id FROM scanner_jobs WHERE org_db_name = %s AND status IN ('queued', 'claimed', 'running', 'stopping') LIMIT 1 FOR UPDATE",
+                (org_db,),
+            )
+            if cursor.fetchone():
+                raise OrganizationConflictError("Stop scans and wait for them to finish before deleting this organization.")
+            cursor.execute("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = %s", (org_db,))
+            if cursor.fetchone():
+                cursor.execute(
+                    f"SELECT id FROM `{org_db}`.scans WHERE status IN ('queued', 'running', 'stopping') LIMIT 1 FOR UPDATE"
+                )
+                if cursor.fetchone():
+                    raise OrganizationConflictError("Stop scans and wait for them to finish before deleting this organization.")
+            # DDL cannot be rolled back. Keep the registry row until DROP succeeds,
+            # so a failed drop or subsequent registry cleanup can be retried.
+            cursor.execute(f"DROP DATABASE IF EXISTS `{org_db}`")
+            for table in ("api_keys", "organization_memberships", "scanner_jobs"):
+                cursor.execute(f"DELETE FROM {table} WHERE org_db_name = %s", (org_db,))
+            cursor.execute("DELETE FROM organizations WHERE id = %s", (organization_id,))
+            connection.commit()
+            return organization
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
 
 
 def _discard_new_org_database(cursor, org_db: str):
@@ -1149,6 +1226,8 @@ def create_or_update_user(
     with DatabaseConnectionManager() as connection:
         cursor = connection.cursor(dictionary=True)
         _ensure_organizations_registry(cursor)
+        if not _lock_organization(cursor, org_db_name):
+            raise ValueError("Organization no longer exists")
         cursor.execute("SELECT id FROM users WHERE email = %s FOR UPDATE", (email,))
         existing = cursor.fetchone()
         if existing:
@@ -1194,10 +1273,6 @@ def create_or_update_user(
                 (email, display_name or email.split("@")[0], salt, digest, created_at),
             )
             user_id = cursor.lastrowid
-
-        cursor.execute("SELECT org_db_name FROM organizations WHERE org_db_name = %s", (org_db_name,))
-        if not cursor.fetchone():
-            raise ValueError("Organization does not exist")
 
         cursor.execute(
             """
@@ -1248,7 +1323,10 @@ def ensure_org_database_schema(org_name: str):
     """Apply current org schema to an existing organization database."""
     org_db = normalize_org_name(org_name)
     with DatabaseConnectionManager() as connection:
-        cursor = connection.cursor()
+        cursor = connection.cursor(dictionary=True)
+        if not _lock_organization(cursor, org_db):
+            cursor.close()
+            return
         cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{org_db}`")
         cursor.execute(f"USE `{org_db}`")
         _apply_org_schema(cursor)
@@ -1260,7 +1338,9 @@ def create_scan_record(org_name: str, scan_name: str, scan_mode: str | None, tar
     """Create a scan tracking record in the organization database."""
     created_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     with DatabaseConnectionManager() as connection:
-        cursor = connection.cursor()
+        cursor = connection.cursor(dictionary=True)
+        if not _lock_organization(cursor, normalize_org_name(org_name)):
+            raise ValueError("Organization no longer exists")
         _use_org_database(cursor, org_name)
         cursor.execute(
             """
@@ -3445,7 +3525,7 @@ def list_organizations() -> list[dict]:
         connection.commit()
         cursor.execute(
             """
-            SELECT org_name, org_db_name, role, mfa_required, sso_required, created_at, last_login_at
+            SELECT id, org_name, org_db_name, role, mfa_required, sso_required, created_at, last_login_at
             FROM organizations
             ORDER BY org_name ASC
             """
@@ -3453,6 +3533,16 @@ def list_organizations() -> list[dict]:
         rows = cursor.fetchall() or []
         cursor.close()
         return rows
+
+
+def get_organization_id(org_db_name: str) -> int | None:
+    """Identify a tenant even when a deleted organization's name is reused."""
+    with DatabaseConnectionManager() as connection:
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute("SELECT id FROM organizations WHERE org_db_name = %s", (org_db_name,))
+        row = cursor.fetchone()
+        cursor.close()
+        return row["id"] if row else None
 
 
 def get_organization_role(org_db_name: str) -> str:
@@ -3612,6 +3702,8 @@ def create_api_key(org_db_name: str, name: str, role: str = "tenant_admin") -> d
     with DatabaseConnectionManager() as connection:
         cursor = connection.cursor(dictionary=True)
         _ensure_organizations_registry(cursor)
+        if not _lock_organization(cursor, org_db_name):
+            raise ValueError("Organization no longer exists")
         cursor.execute(
             """
             INSERT INTO api_keys (org_db_name, name, key_prefix, key_hash, role, created_at)
@@ -5345,8 +5437,10 @@ def enqueue_scanner_job(
     """Insert a scan into the central worker queue."""
     now = _utcnow()
     with DatabaseConnectionManager() as connection:
-        cursor = connection.cursor()
+        cursor = connection.cursor(dictionary=True)
         _ensure_organizations_registry(cursor)
+        if not _lock_organization(cursor, org_db_name):
+            raise ValueError("Organization no longer exists")
         cursor.execute(
             """
             INSERT INTO scanner_jobs
@@ -5390,7 +5484,7 @@ def enqueue_scanner_job(
                 (org_db_name, scan_id),
             )
             row = cursor.fetchone()
-            job_id = row[0] if row else 0
+            job_id = row["id"] if row else 0
         connection.commit()
         cursor.close()
     return int(job_id)
@@ -5721,6 +5815,7 @@ def get_oversight_summary() -> dict:
         running = int(stats.get("running_scans") or 0)
         tenant_summaries.append(
             {
+                "id": organization["id"],
                 "organization": organization["org_name"],
                 "org_db": org_db,
                 "role": organization.get("role"),

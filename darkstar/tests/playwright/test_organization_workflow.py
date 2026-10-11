@@ -19,8 +19,9 @@ def organization_page(darkstar_server):
         state = {
             "role": "platform_admin",
             "org_db": "tenant_db",
-            "organizations": [{"org_name": "Acme Security", "org_db_name": "tenant_db"}],
+            "organizations": [{"id": 1, "org_name": "Acme Security", "org_db_name": "tenant_db", "role": "tenant_admin"}],
             "requests": [],
+            "deletions": [],
             "error": None,
             "hold": False,
         }
@@ -35,7 +36,7 @@ def organization_page(darkstar_server):
         def overview(route):
             _json(route, {
                 "totals": {"organizations": len(state["organizations"])},
-                "tenants": [{"organization": org["org_name"], "org_db": org["org_db_name"]} for org in state["organizations"]],
+                "tenants": [{"id": org["id"], "organization": org["org_name"], "org_db": org["org_db_name"], "role": org.get("role")} for org in state["organizations"]],
             })
 
         def finish_creation(route):
@@ -43,7 +44,7 @@ def organization_page(darkstar_server):
                 status, detail = state["error"]
                 _json(route, {"detail": detail}, status=status)
                 return
-            organization = {"org_name": route.request.post_data_json["name"], "org_db_name": "org_new_tenant"}
+            organization = {"id": 2, "org_name": route.request.post_data_json["name"], "org_db_name": "org_new_tenant"}
             state["organizations"].append(organization)
             _json(route, {"ok": True, "organization": organization}, status=201)
 
@@ -59,9 +60,20 @@ def organization_page(darkstar_server):
             organization = next(org for org in state["organizations"] if org["org_db_name"] == state["org_db"])
             _json(route, {"ok": True, "organization": organization["org_name"], "org_db": state["org_db"], "role": state["role"]})
 
+        def delete(route):
+            organization_id = int(route.request.url.rsplit("/", 1)[1])
+            state["deletions"].append(organization_id)
+            if state["error"]:
+                status, detail = state["error"]
+                _json(route, {"detail": detail}, status=status)
+                return
+            state["organizations"] = [org for org in state["organizations"] if org["id"] != organization_id]
+            _json(route, {"ok": True})
+
         page.route(f"{darkstar_server}/api/me", me)
         page.route(f"{darkstar_server}/api/admin/overview", overview)
         page.route(f"{darkstar_server}/api/admin/organizations", create)
+        page.route(f"{darkstar_server}/api/admin/organizations/*", delete)
         page.route(f"{darkstar_server}/api/auth/select-organization", switch)
         try:
             yield page, state, finish_creation, darkstar_server
@@ -85,7 +97,7 @@ def test_creation_refreshes_list_and_selector_without_logging_in_again(organizat
     open_oversight(page, base_url)
     page.locator("#organizationNameInput").fill("   ")
     page.get_by_role("button", name="Create organization", exact=True).click()
-    expect(page.locator("#createOrganizationMessage")).to_have_text("Organization name is required.")
+    expect(page.locator("#organizationMessage")).to_have_text("Organization name is required.")
     assert state["requests"] == []
 
     page.locator("#organizationNameInput").fill("  New Tenant  ")
@@ -97,7 +109,7 @@ def test_creation_refreshes_list_and_selector_without_logging_in_again(organizat
     assert state["requests"] == [{"name": "New Tenant"}]
     finish_creation(state["pending_route"])
 
-    expect(page.locator("#createOrganizationMessage")).to_contain_text("New Tenant” created")
+    expect(page.locator("#organizationMessage")).to_contain_text("New Tenant” created")
     expect(page.locator("#oversightRows")).to_contain_text("New Tenant")
     expect(page.locator("#tenantTotal")).to_have_text("2")
     expect(page.locator("#tenantSwitchSelect option")).to_have_text(["Acme Security", "New Tenant"])
@@ -121,7 +133,7 @@ def test_server_error_keeps_form_available_for_correction(organization_page, err
     state["error"] = error
     page.locator("#organizationNameInput").fill("Acme")
     page.get_by_role("button", name="Create organization", exact=True).click()
-    expect(page.locator("#createOrganizationMessage")).to_have_text(error[1])
+    expect(page.locator("#organizationMessage")).to_have_text(error[1])
     expect(page.locator("#createOrganizationForm")).to_be_visible()
     expect(page.locator("#organizationNameInput")).to_have_value("Acme")
     expect(page.locator("#createOrganizationBtn")).to_be_enabled()
@@ -144,3 +156,51 @@ def test_non_platform_roles_cannot_open_or_submit_creation_form(organization_pag
     page.locator("#organizationNameInput").evaluate("element => element.value = 'Forbidden Tenant'")
     page.locator("#createOrganizationForm").dispatch_event("submit")
     assert state["requests"] == []
+
+
+def test_delete_requires_confirmation_and_refreshes_the_list(organization_page):
+    from playwright.sync_api import expect
+
+    page, state, _finish, base_url = organization_page
+    state["organizations"].extend([
+        {"id": 2, "org_name": "Temporary Tenant", "org_db_name": "org_temporary"},
+        {"id": 3, "org_name": "Platform", "org_db_name": "org_platform", "role": "platform_admin"},
+    ])
+    open_oversight(page, base_url)
+    expect(page.get_by_role("button", name="Delete Acme Security", exact=True)).to_be_disabled()
+    expect(page.get_by_role("button", name="Delete Platform", exact=True)).to_have_count(0)
+    button = page.get_by_role("button", name="Delete Temporary Tenant", exact=True)
+
+    def cancel(dialog):
+        assert "Temporary Tenant" in dialog.message
+        assert "cannot be undone" in dialog.message
+        dialog.dismiss()
+
+    page.once("dialog", cancel)
+    button.click()
+    assert state["deletions"] == []
+    expect(button).to_be_enabled()
+    page.once("dialog", lambda dialog: dialog.accept())
+    button.click()
+    expect(page.locator("#organizationMessage")).to_have_text("Organization “Temporary Tenant” deleted.")
+    expect(page.locator("#oversightRows")).not_to_contain_text("Temporary Tenant")
+    expect(page.locator("#tenantSwitchSelect option")).to_have_text(["Acme Security", "Platform"])
+    expect(page.locator("#tenantTotal")).to_have_text("2")
+    assert state["deletions"] == [2]
+
+
+@pytest.mark.parametrize("error", [(409, "Stop scans first"), (503, "Organization deletion failed")])
+def test_failed_deletion_keeps_the_organization_available(organization_page, error):
+    from playwright.sync_api import expect
+
+    page, state, _finish, base_url = organization_page
+    state["organizations"].append({"id": 2, "org_name": "Temporary Tenant", "org_db_name": "org_temporary"})
+    state["error"] = error
+    open_oversight(page, base_url)
+    page.once("dialog", lambda dialog: dialog.accept())
+    button = page.get_by_role("button", name="Delete Temporary Tenant", exact=True)
+    button.click()
+    expect(page.locator("#organizationMessage")).to_have_text(error[1])
+    expect(button).to_be_enabled()
+    expect(page.locator("#tenantSwitchSelect option")).to_have_count(2)
+    assert state["deletions"] == [2]

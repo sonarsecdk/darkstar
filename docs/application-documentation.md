@@ -90,6 +90,23 @@ to their tenant. Accounts shared across tenants and platform administrator
 accounts must be managed by a platform administrator, because passwords and
 profile fields belong to the same user across all memberships.
 
+Platform administrators can permanently delete a tenant using **Oversight →
+Delete** and confirming the organization name shown in the dialog. Switch to a
+different organization first. The platform organization cannot be deleted, and
+queued or running scans must be stopped and finish before deletion is allowed.
+Deletion removes the tenant database, findings, schedules, endpoint records,
+API keys, scan jobs and memberships. User accounts and other organizations remain.
+The overview and organization selector refresh after deletion.
+
+The API equivalent is `DELETE /api/admin/organizations/{organization_id}`, using
+the numeric `id` from `GET /api/admin/organizations`. It returns HTTP 200 with
+`{"ok": true}`, 404 for a missing organization, or 409 when deletion is blocked.
+Database failures return 503; deletion may already have removed the tenant
+database, so retry to complete registry cleanup. Deletion is recorded in the
+administrator's current organization's audit log. Existing sessions for a
+deleted tenant expire, including when its name is reused. Sessions created
+before this feature was installed require a new login.
+
 ## Testing and Quality Control
 
 Darkstar has a layered test setup for developers and CI/CD:

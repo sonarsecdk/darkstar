@@ -1223,6 +1223,25 @@ function closeAuthSetupPanels(exceptPanelId = "") {
     }
 }
 
+function updateLoginStep() {
+    const mfa = state.mfaPending || state.mfaSetupPending;
+    const choosingOrganization = state.organizationSelectionPending && !mfa;
+    const pending = choosingOrganization || mfa;
+    document.querySelectorAll(".login-credentials, .login-sso").forEach(element => {
+        element.classList.toggle("hidden", pending);
+    });
+    document.querySelectorAll(".login-credentials input").forEach(input => {
+        input.disabled = pending;
+    });
+    document.getElementById("orgChoiceGroup").classList.toggle("hidden", !choosingOrganization);
+    document.getElementById("mfaLoginGroup").classList.toggle("hidden", !mfa);
+    document.getElementById("mfaSetupLoginPanel").classList.toggle("hidden", !state.mfaSetupPending);
+    document.getElementById("mfaCodeInput").required = mfa;
+    const submit = document.getElementById("loginSubmitBtn");
+    submit.classList.toggle("hidden", choosingOrganization);
+    submit.textContent = mfa ? "Verify code" : "Sign In";
+}
+
 function setAuthUI() {
     const loginPanel = document.getElementById("loginScreen");
     const dashboardPanel = document.getElementById("mainDashboard");
@@ -1235,6 +1254,7 @@ function setAuthUI() {
         state.themeVersion += 1;
         state.themeSaving = false;
         updateAppearance(null);
+        updateLoginStep();
     }
 }
 
@@ -1282,7 +1302,7 @@ function renderTenantSwitch(me = {}) {
     group.classList.toggle("hidden", memberships.length < 2);
 }
 
-async function completeAuth(result, messageText = "Ingelogd.") {
+async function completeAuth(result, messageText = "Signed in.") {
     state.authenticated = true;
     state.themeVersion += 1;
     state.themeSaving = false;
@@ -1296,11 +1316,8 @@ async function completeAuth(result, messageText = "Ingelogd.") {
     if (result.organizations) {
         state.organizations = result.organizations;
     }
-    document.getElementById("mfaLoginGroup").classList.add("hidden");
-    document.getElementById("mfaSetupLoginPanel").classList.add("hidden");
+    updateLoginStep();
     setQrImage("mfaLoginQrImage", null);
-    document.getElementById("orgChoiceGroup").classList.add("hidden");
-    document.getElementById("mfaCodeInput").required = false;
     setAuthUI();
     applyRoleUI();
     const loginMessage = document.getElementById("loginMessage");
@@ -1317,26 +1334,26 @@ function handleAuthStep(result) {
         select.innerHTML = (result.organizations || []).map(org => `
             <option value="${escapeHtml(org.org_db)}">${escapeHtml(org.org_name)} (${escapeHtml(org.role)})</option>
         `).join("");
-        document.getElementById("orgChoiceGroup").classList.remove("hidden");
-        loginMessage.textContent = "Kies de organisatie waarmee je wilt werken.";
+        updateLoginStep();
+        loginMessage.textContent = "Password accepted. Choose an organization, then select Open organization.";
+        select.focus();
         return true;
     }
     if (result.mfa_required) {
         state.mfaPending = true;
-        document.getElementById("mfaLoginGroup").classList.remove("hidden");
-        document.getElementById("mfaCodeInput").required = true;
-        loginMessage.textContent = "MFA is verplicht. Vul je authenticator-code in.";
+        updateLoginStep();
+        loginMessage.textContent = "Enter the code from your authenticator to finish signing in.";
+        document.getElementById("mfaCodeInput").focus();
         return true;
     }
     if (result.mfa_setup_required) {
         state.mfaSetupPending = true;
-        document.getElementById("mfaSetupLoginPanel").classList.remove("hidden");
-        document.getElementById("mfaLoginGroup").classList.remove("hidden");
-        document.getElementById("mfaCodeInput").required = true;
+        updateLoginStep();
         document.getElementById("mfaLoginSecretOutput").textContent = result.secret;
         document.getElementById("mfaLoginOtpAuthOutput").value = result.otpauth_url;
         setQrImage("mfaLoginQrImage", result.qr_data_uri);
-        loginMessage.textContent = "MFA is verplicht. Stel MFA in en bevestig met een code.";
+        loginMessage.textContent = "Set up your authenticator, then enter its code to finish signing in.";
+        document.getElementById("mfaCodeInput").focus();
         return true;
     }
     return false;
@@ -2732,6 +2749,11 @@ document.getElementById("loginForm").addEventListener("submit", async (event) =>
                 method: "POST",
                 body: JSON.stringify({ code: mfaCode }),
             })
+            : state.organizationSelectionPending
+            ? await requestJson("/api/auth/select-organization", {
+                method: "POST",
+                body: JSON.stringify({ org_db: document.getElementById("orgChoiceInput").value }),
+            })
             : await requestJson("/api/auth/login", {
                 method: "POST",
                 body: JSON.stringify({ email, password, setup_token: setupToken || null }),
@@ -2739,23 +2761,7 @@ document.getElementById("loginForm").addEventListener("submit", async (event) =>
         if (handleAuthStep(result)) {
             return;
         }
-        await completeAuth(result, result.created ? "Account aangemaakt en ingelogd." : "Ingelogd.");
-    } catch (error) {
-        loginMessage.textContent = error.message;
-    }
-});
-
-document.getElementById("selectOrgBtn").addEventListener("click", async () => {
-    const loginMessage = document.getElementById("loginMessage");
-    try {
-        const result = await requestJson("/api/auth/select-organization", {
-            method: "POST",
-            body: JSON.stringify({ org_db: document.getElementById("orgChoiceInput").value }),
-        });
-        if (handleAuthStep(result)) {
-            return;
-        }
-        await completeAuth(result, "Organisatie geopend.");
+        await completeAuth(result, result.created ? "Account created and signed in." : "Signed in.");
     } catch (error) {
         loginMessage.textContent = error.message;
     }
@@ -2765,7 +2771,7 @@ document.getElementById("ssoLoginBtn").addEventListener("click", () => {
     const organization = document.getElementById("ssoOrgInput").value.trim();
     const loginMessage = document.getElementById("loginMessage");
     if (!organization) {
-        loginMessage.textContent = "Vul de SSO-organisatie in om SSO te starten.";
+        loginMessage.textContent = "Enter your SSO organization to continue.";
         return;
     }
     window.location.href = `/api/auth/sso/start?organization=${encodeURIComponent(organization)}`;
@@ -2783,6 +2789,8 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
         state.mfaPending = false;
         state.mfaSetupPending = false;
         state.organizationSelectionPending = false;
+        document.getElementById("loginForm").reset();
+        document.getElementById("loginMessage").textContent = "";
         setAuthUI();
     }
 });

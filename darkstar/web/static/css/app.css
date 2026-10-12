@@ -2015,7 +2015,7 @@ body::after {
         0 0 70px rgba(var(--accent-rgb), 0.10),
         inset 0 1px 0 rgba(255, 255, 255, 0.08);
     backdrop-filter: blur(24px);
-    overflow: hidden;
+    overflow-y: auto;
 }
 
 .login-container::before {

@@ -104,6 +104,7 @@
         <main class="content-area">
             <!-- Dashboard Tab -->
             <div id="dashboard-tab" class="tab-panel active">
+                <label class="checkbox-label"><input type="checkbox" class="include-accepted-risks" /> Include accepted risks</label>
                 <section class="dashboard-hero">
                     <div>
                         <p class="eyebrow">Darkstar command center</p>
@@ -175,6 +176,8 @@
 
                 <div class="card">
                     <div class="card-header">Advanced Filtering</div>
+                <label class="checkbox-label"><input type="checkbox" class="include-accepted-risks" /> Include accepted risks</label>
+
                     <div class="filter-grid">
                         <div class="filter-group">
                             <label>Severity</label>
@@ -220,7 +223,7 @@
                     <div class="card-header">
                         Results
 	                        <span>
-	                            <a class="btn-secondary btn-sm" href="/api/exports/vulnerabilities.csv">CSV</a>
+	                            <a id="csvExportBtn" class="btn-secondary btn-sm" href="/api/exports/vulnerabilities.csv">CSV</a>
 	                            <a id="xlsxExportBtn" class="btn-secondary btn-sm" href="/api/exports/vulnerabilities.xlsx">XLSX</a>
 	                            <a id="htmlReportExportBtn" class="btn-secondary btn-sm" href="/api/exports/vulnerabilities.html" target="_blank" rel="noopener">HTML Report</a>
 	                            <span id="resultCount" class="header-badge">0</span>
@@ -254,6 +257,7 @@
 
             <!-- Host Detail Tab -->
             <div id="host-tab" class="tab-panel">
+                <label class="checkbox-label"><input type="checkbox" class="include-accepted-risks" /> Include accepted risks</label>
                 <div class="card host-detail-card">
                     <div class="card-header">
                         <span id="hostDetailTitle">Host</span>
@@ -285,6 +289,7 @@
 
             <!-- Attack Surface Tab -->
             <div id="surface-tab" class="tab-panel">
+                <label class="checkbox-label"><input type="checkbox" class="include-accepted-risks" /> Include accepted risks</label>
                 <div class="grid-4">
                     <div class="metric-card">
                         <div class="metric-label">Assets</div>
@@ -411,6 +416,7 @@
 
             <!-- Scoring Tab -->
             <div id="scoring-tab" class="tab-panel">
+                <label class="checkbox-label"><input type="checkbox" class="include-accepted-risks" /> Include accepted risks</label>
                 <div class="grid-4">
                     <div class="metric-card">
                         <div class="metric-label">Average Priority</div>
@@ -493,6 +499,7 @@
 
             <!-- Endpoints Tab -->
             <div id="endpoints-tab" class="tab-panel">
+                <label class="checkbox-label"><input type="checkbox" class="include-accepted-risks" /> Include accepted risks</label>
                 <div class="grid-4">
                     <div class="metric-card"><div class="metric-label">Agents</div><div class="metric-value" id="endpointAgentTotal">0</div></div>
                     <div class="metric-card"><div class="metric-label">Online</div><div class="metric-value" id="endpointOnlineTotal">0</div></div>
@@ -1209,6 +1216,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=20261022-english"></script>
+    <script src="/static/js/app.js?v=20261022-risk"></script>
 </body>
 </html>

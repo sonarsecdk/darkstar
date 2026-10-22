@@ -89,7 +89,7 @@ def test_credential_writes_keep_authenticated_organization_identity(api_client, 
 def test_vulnerability_routes_filter_group_and_detail(api_client, monkeypatch):
     filtered_call = {}
 
-    def fake_filtered(org_db, severity, host, tool, limit, offset, dedupe=False):
+    def fake_filtered(org_db, severity, host, tool, limit, offset, dedupe=False, include_accepted=False):
         filtered_call.update(
             {
                 "org_db": org_db,
@@ -99,6 +99,7 @@ def test_vulnerability_routes_filter_group_and_detail(api_client, monkeypatch):
                 "limit": limit,
                 "offset": offset,
                 "dedupe": dedupe,
+                "include_accepted": include_accepted,
             }
         )
         return (
@@ -121,7 +122,7 @@ def test_vulnerability_routes_filter_group_and_detail(api_client, monkeypatch):
     monkeypatch.setattr(
         webapp,
         "get_grouped_vulnerabilities",
-        lambda org_db, group_by: [{"group_key": "app.example.com", "count": 1, "max_priority": 91}],
+        lambda org_db, group_by, include_accepted=False: [{"group_key": "app.example.com", "count": 1, "max_priority": 91}],
     )
 
     filtered = api_client.get(
@@ -143,6 +144,7 @@ def test_vulnerability_routes_filter_group_and_detail(api_client, monkeypatch):
         "limit": 10,
         "offset": 5,
         "dedupe": True,
+        "include_accepted": False,
     }
     assert detail.json()["title"] == "SQL Injection"
     assert hosts.json()["items"] == ["app.example.com"]
@@ -154,7 +156,8 @@ def test_attack_surface_and_subdomain_routes(api_client, monkeypatch):
     attack_surface_call = {}
     subdomain_call = {}
 
-    def fake_attack_surface(org_db, search=None, limit=100, offset=0):
+    def fake_attack_surface(org_db, search=None, limit=100, offset=0, include_accepted=False):
+        assert include_accepted is False
         attack_surface_call.update({"org_db": org_db, "search": search, "limit": limit, "offset": offset})
         return {
             "summary": {"asset_count": 1, "exposed_ports": 2},

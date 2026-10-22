@@ -949,7 +949,7 @@ function scoreDetailSection(score, reason) {
                 <h4>Score Calculation</h4>
                 <span class="score-pill">${escapeHtml(score ?? "-")}</span>
             </div>
-            <p>${escapeHtml(reason || "Geen scoreberekening opgeslagen. Gebruik Recalculate Scores om de prioriteit opnieuw te laten berekenen.")}</p>
+            <p>${escapeHtml(reason || "No score calculation is saved. Use Recalculate Scores to calculate the priority.")}</p>
         </section>
     `;
 }
@@ -2203,7 +2203,7 @@ function addRecipientFromInput() {
     const value = input.value.trim();
     if (!value) return;
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
-        if (message) message.textContent = "Vul een geldig e-mailadres in.";
+        if (message) message.textContent = "Enter a valid email address.";
         return;
     }
     state.notificationRecipients = [...new Set([...state.notificationRecipients, value])];

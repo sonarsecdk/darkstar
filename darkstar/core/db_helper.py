@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 from .models.vulnerability import Vulnerability
+from .scan_scope import ScanScope, normalize_scope_entry
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,13 @@ VALID_ROLES = {"platform_admin", "tenant_admin", "security_analyst", "viewer"}
 
 
 ORG_SCHEMA_STATEMENTS = [
+    """
+    CREATE TABLE IF NOT EXISTS allowed_scan_targets (
+        target VARCHAR(253) NOT NULL PRIMARY KEY,
+        approved_by VARCHAR(255) NOT NULL,
+        approved_at DATETIME NOT NULL
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS risk_acceptances (
         finding_key CHAR(64) NOT NULL PRIMARY KEY,
@@ -1396,6 +1404,42 @@ def ensure_org_database_schema(org_name: str):
         cursor.close()
 
 
+def get_allowed_scan_targets(org_name: str) -> list[dict]:
+    with DatabaseConnectionManager() as connection:
+        cursor = connection.cursor(dictionary=True)
+        _use_org_database(cursor, org_name)
+        cursor.execute("SELECT target, approved_by, approved_at FROM allowed_scan_targets ORDER BY target")
+        rows = cursor.fetchall() or []
+        cursor.close()
+        return rows
+
+
+def replace_allowed_scan_targets(org_name: str, targets: list[str], *, actor: str, expected_org_id: int) -> list[dict]:
+    targets = sorted({normalize_scope_entry(target) for target in targets})
+    with DatabaseConnectionManager() as connection:
+        cursor = connection.cursor(dictionary=True)
+        organization = _lock_organization(cursor, normalize_org_name(org_name))
+        if not organization or organization["id"] != expected_org_id:
+            raise OrganizationConflictError("Organization is no longer available")
+        _use_org_database(cursor, org_name)
+        cursor.execute("SELECT id FROM scans WHERE status IN ('queued', 'running', 'stopping') LIMIT 1")
+        if cursor.fetchone():
+            raise OrganizationConflictError("Stop active and queued scans before changing allowed targets")
+        cursor.execute("SELECT target FROM allowed_scan_targets ORDER BY target")
+        previous = [row["target"] for row in cursor.fetchall() or []]
+        now = datetime.utcnow()
+        cursor.execute("DELETE FROM allowed_scan_targets")
+        if targets:
+            cursor.executemany("INSERT INTO allowed_scan_targets (target, approved_by, approved_at) VALUES (%s, %s, %s)",
+                               [(target, actor, now) for target in targets])
+        cursor.execute("""INSERT INTO audit_log (actor, action, entity_type, metadata, created_at)
+                          VALUES (%s, 'scan_scope.updated', 'organization', %s, %s)""",
+                       (actor, json.dumps({"before": previous, "after": targets}), now))
+        connection.commit()
+        cursor.close()
+    return get_allowed_scan_targets(org_name)
+
+
 def create_scan_record(org_name: str, scan_name: str, scan_mode: str | None, targets: str) -> int:
     """Create a scan tracking record in the organization database."""
     created_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
@@ -1404,6 +1448,10 @@ def create_scan_record(org_name: str, scan_name: str, scan_mode: str | None, tar
         if not _lock_organization(cursor, normalize_org_name(org_name)):
             raise ValueError("Organization no longer exists")
         _use_org_database(cursor, org_name)
+        cursor.execute("SELECT target FROM allowed_scan_targets")
+        ScanScope([row["target"] for row in cursor.fetchall() or []]).require(
+            [target.strip() for target in re.split(r"[,\r\n]+", targets) if target.strip()]
+        )
         cursor.execute(
             """
             INSERT INTO scans (scan_name, scan_mode, targets, status, created_at)

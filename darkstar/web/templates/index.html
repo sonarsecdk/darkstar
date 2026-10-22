@@ -868,6 +868,19 @@
                     <p id="themeMessage" class="form-message" role="status" aria-live="polite">Sign in with a personal account to save a theme.</p>
                 </div>
 
+                <div class="card">
+                    <div class="card-header">Allowed scan targets</div>
+                    <p>Only platform admins can change this organization's scan scope. An empty list blocks all scans, including schedules.</p>
+                    <div class="form-group">
+                        <label for="allowedTargetsInput">IPs, CIDRs, hostnames, or *.domain patterns (one per line)</label>
+                        <textarea id="allowedTargetsInput" rows="6" readonly placeholder="No approved targets"></textarea>
+                    </div>
+                    <p>Approving example.com does not approve its subdomains. Its DNS addresses must also be approved as IPs or CIDRs; new addresses are blocked until approved. Stop active and queued scans before changing this list.</p>
+                    <p>Appliance network restrictions are also required to contain redirects and DNS changes during a running scan.</p>
+                    <button id="saveScanScopeBtn" type="button" class="btn-primary admin-only hidden">Save allowed targets</button>
+                    <p id="scanScopeMessage" class="form-message" role="status"></p>
+                </div>
+
                 <div class="card tenant-admin-only hidden settings-users-card">
                     <div class="card-header">Users & Roles</div>
                     <div class="filter-grid">
@@ -1221,6 +1234,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=20261022-profiles"></script>
+    <script src="/static/js/app.js?v=20261022-scope"></script>
 </body>
 </html>

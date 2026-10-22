@@ -289,6 +289,9 @@ def _install_dashboard_mocks(page, base_url):
             items = [item for item in profiles if (not scanner or scanner == item["scanner"]) and search in item["name"].lower()]
             _json(route, {"items": items, "total": len(items), "scanners": ["openvas", "zap"], "updated_at": "2026-10-22T12:00:00"})
             return
+        if path == "/api/scan-scope" and method == "GET":
+            _json(route, {"items": [{"target": "192.0.2.0/24", "approved_by": "platform@example.test"}]})
+            return
         if path == "/api/scanner-nodes/available":
             _json(
                 route,
@@ -603,5 +606,43 @@ def test_scan_center_selects_profiles_and_keeps_them_in_schedules(darkstar_serve
             expect(zap.locator('[type="checkbox"]')).not_to_be_checked()
             assert state['unexpected'] == []
             page.screenshot(path='test-results/playwright/scanner-selection.png', full_page=True)
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('role', ['tenant_admin', 'platform_admin'])
+def test_scan_scope_settings_can_only_be_saved_by_platform_admin(darkstar_server, role):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page(viewport={'width': 1440, 'height': 1100})
+            state = _install_dashboard_mocks(page, darkstar_server)
+            page.route('**/api/me', lambda route: _json(route, {'authenticated': True, 'organization': 'Test', 'org_db': 'tenant_db', 'role': role, 'user': {'id': 1, 'theme': 'darkstar'}}))
+            page.route('**/api/scanner-nodes', lambda route: _json(route, {'items': []}))
+            page.route('**/api/admin/auth/policy', lambda route: _json(route, {}))
+            page.route('**/api/admin/organizations', lambda route: _json(route, {'items': []}))
+            page.route('**/api/admin/users', lambda route: _json(route, {'items': []}))
+            writes = []
+            def scope(route):
+                if route.request.method == 'PUT':
+                    writes.append(route.request.post_data_json)
+                _json(route, {'items': [{'target': target} for target in (writes[-1]['targets'] if writes else ['192.0.2.0/24'])]})
+            page.route('**/api/scan-scope', scope)
+            page.goto(darkstar_server, wait_until='networkidle')
+            page.locator('[data-tab="settings"]').click()
+            expect(page.locator('#allowedTargetsInput')).to_have_value('192.0.2.0/24')
+            if role == 'platform_admin':
+                expect(page.locator('#saveScanScopeBtn')).to_be_enabled()
+                page.locator('#allowedTargetsInput').fill('example.test\n192.0.2.1')
+                page.locator('#saveScanScopeBtn').click()
+                expect(page.locator('#scanScopeMessage')).to_have_text('Allowed scan targets saved.')
+                assert writes == [{'targets': ['example.test', '192.0.2.1']}]
+            else:
+                expect(page.locator('#allowedTargetsInput')).not_to_be_editable()
+                expect(page.locator('#saveScanScopeBtn')).to_be_disabled()
+                assert writes == []
+            assert state['unexpected'] == []
         finally:
             browser.close()

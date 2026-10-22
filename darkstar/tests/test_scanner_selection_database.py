@@ -21,6 +21,8 @@ def database(monkeypatch):
     try:
         for _ in range(2):
             names.append(db.create_organization('selection_test_' + uuid.uuid4().hex[:12])['org_db_name'])
+        for org in names:
+            db.replace_allowed_scan_targets(org, ['192.0.2.1'], actor='platform-test', expected_org_id=db.get_organization_id(org))
         node = db.create_scanner_node('selection-test-' + uuid.uuid4().hex[:10], capabilities=['openvas', 'zap'])
         yield names, node
     finally:

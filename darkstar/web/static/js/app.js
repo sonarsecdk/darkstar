@@ -1534,7 +1534,7 @@ function switchTab(tabName) {
     if (tabName === "host")     return loadHostView();
     if (tabName === "scan") return Promise.all([refreshDashboard(), loadScannerApplianceOptions(), loadSchedulesView()]);
     if (tabName === "schedules") return loadSchedulesView();
-    if (tabName === "settings") return Promise.all([loadNotificationSettings(), loadSecurityView()]);
+    if (tabName === "settings") return Promise.all([loadNotificationSettings(), loadSecurityView(), loadScanScope()]);
     if (tabName === "m365") return loadM365View();
     if (tabName === "docs") {
         ensureDocsPage();
@@ -2460,6 +2460,38 @@ function renderScannerNodeRows(nodes) {
         `;
     }).join("");
 }
+
+async function loadScanScope() {
+    const orgDb = state.orgDb;
+    const input = document.getElementById("allowedTargetsInput");
+    const message = document.getElementById("scanScopeMessage");
+    input.readOnly = true;
+    document.getElementById("saveScanScopeBtn").disabled = true;
+    try {
+        const result = await requestJson("/api/scan-scope");
+        if (state.orgDb !== orgDb) return;
+        input.value = (result.items || []).map(item => item.target).join("\n");
+        input.readOnly = state.role !== "platform_admin";
+        document.getElementById("saveScanScopeBtn").disabled = input.readOnly;
+        message.textContent = result.items.length ? "" : "Scans are blocked until a platform admin approves targets.";
+    } catch (error) { if (state.orgDb === orgDb) message.textContent = error.message; }
+}
+
+document.getElementById("saveScanScopeBtn").addEventListener("click", async event => {
+    if (state.role !== "platform_admin" || event.target.disabled) return;
+    event.target.disabled = true;
+    const orgDb = state.orgDb;
+    const message = document.getElementById("scanScopeMessage");
+    try {
+        await requestJson("/api/scan-scope", { method: "PUT", body: JSON.stringify({
+            targets: document.getElementById("allowedTargetsInput").value.split(/[,\r\n]+/).map(item => item.trim()).filter(Boolean),
+        }) });
+        if (state.orgDb !== orgDb) return;
+        await loadScanScope();
+        message.textContent = "Allowed scan targets saved.";
+    } catch (error) { message.textContent = error.message; }
+    finally { event.target.disabled = state.role !== "platform_admin"; }
+});
 
 async function loadSecurityView() {
     try {

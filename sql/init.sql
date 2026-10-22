@@ -481,3 +481,9 @@ CREATE TABLE IF NOT EXISTS risk_acceptances (
         revoked_by VARCHAR(255) DEFAULT NULL,
         revoked_at DATETIME DEFAULT NULL
     );
+
+CREATE TABLE IF NOT EXISTS allowed_scan_targets (
+        target VARCHAR(253) NOT NULL PRIMARY KEY,
+        approved_by VARCHAR(255) NOT NULL,
+        approved_at DATETIME NOT NULL
+    );

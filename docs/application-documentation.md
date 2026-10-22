@@ -540,3 +540,28 @@ Then revert the feature merge and redeploy the matching web/worker versions.
 The additive `scan_components` table and catalog/schedule columns may remain:
 reverting code does not delete findings or scan evidence. Old workers cannot
 execute combined selections. New workers retain compatibility with legacy jobs.
+
+
+### Approved scan targets
+
+The Settings page lets platform admins maintain each organization's approved IPs,
+CIDRs, exact hostnames, and `*.domain` patterns. Other members can read the list.
+An empty list blocks scans, including existing schedules. An exact hostname does
+not approve subdomains; a wildcard does not approve its parent hostname.
+
+A domain and every address it currently resolves to must be approved separately.
+An IP inside an approved CIDR is already approved. DNS is checked when requesting
+a scan, when a worker claims it, and before scanner stages start. A newly resolved
+address outside the approved networks blocks execution until a platform admin
+updates the list. Changing approvals requires stopping active and queued scans.
+Updates record the actor and the previous/new lists in the organization audit log.
+
+These are application target checks. They do not provide packet-level isolation
+of native scanner processes or remote OpenVAS. Native discovery, redirects, and
+DNS changes during a running scanner still require appliance network restrictions
+to enforce a strict boundary. Do not treat this feature alone as such a boundary.
+
+The schema adds `allowed_scan_targets` without granting existing assets automatic
+approval. Reverting the feature restores the previous unrestricted target
+behavior; the approval/audit records may remain unused in the database. Account
+for that security change before deploying a rollback.

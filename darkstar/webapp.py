@@ -41,6 +41,8 @@ from dotenv import load_dotenv
 # Global reference to event loop for async operations from threads
 _event_loop = None
 
+from .core.scan_scope import ScanScope, ScanScopeError, target_host
+
 from .core.db_helper import (
     create_scan_components,
     get_scan_components,
@@ -57,6 +59,8 @@ from .core.db_helper import (
     complete_scanner_job,
     authenticate_user,
     record_audit_event,
+    get_allowed_scan_targets,
+    replace_allowed_scan_targets,
     set_risk_acceptance,
     create_api_key,
     create_endpoint_enrollment_token,
@@ -280,7 +284,7 @@ def _scheduler_loop():
                                 schedule["id"],
                             )
                             continue
-                        if exc.status_code == 400:
+                        if exc.status_code in {400, 403}:
                             logger.warning("Scheduled scan %s blocked: %s", schedule["id"], exc.detail)
                             mark_schedule_run(org_db, schedule["id"])
                             continue
@@ -473,6 +477,10 @@ class OrgUserRequest(BaseModel):
 class RiskAcceptanceRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=4000)
     expires_at: datetime | None = None
+
+
+class ScanScopeRequest(BaseModel):
+    targets: list[str] = Field(max_length=2000)
 
 
 class ScannerSelection(BaseModel):
@@ -1016,48 +1024,23 @@ def _split_scan_targets(targets: str) -> list[str]:
 
 def _target_looks_like_file_path(target: str) -> bool:
     value = target.strip()
-    lower = value.lower()
-    if lower.startswith("file:"):
-        return True
-    if value.startswith(("/", "\\", "./", "../", "~")):
+    if value.lower().startswith("file:") or value.startswith(("/", "\\", "./", "../", "~")):
         return True
     if re.match(r"^[a-zA-Z]:[\\/]", value):
         return True
-    parsed = urlparse(value)
-    if parsed.scheme:
-        return parsed.scheme.lower() not in {"http", "https", "ftp"} or not parsed.hostname
     try:
         ipaddress.ip_network(value, strict=False)
         return False
     except ValueError:
-        pass
-    return "/" in value or "\\" in value
-
-
-def _host_part_is_valid(host: str) -> bool:
-    host = host.strip().strip("[]").lower()
-    if not host:
-        return False
-    try:
-        ipaddress.ip_address(host)
-        return True
-    except ValueError:
-        return bool(DOMAIN_TARGET_RE.match(host))
+        return "://" not in value and ("/" in value or "\\" in value)
 
 
 def _target_has_supported_shape(target: str) -> bool:
-    parsed = urlparse(target)
-    if parsed.scheme:
-        return parsed.scheme.lower() in {"http", "https", "ftp"} and bool(parsed.hostname)
     try:
-        ipaddress.ip_network(target, strict=False)
+        target_host(target)
         return True
-    except ValueError:
-        pass
-    if ":" in target and target.count(":") == 1:
-        host, port = target.rsplit(":", 1)
-        return port.isdigit() and _host_part_is_valid(host)
-    return _host_part_is_valid(target)
+    except ScanScopeError:
+        return False
 
 
 def _normalize_scan_targets(targets: str) -> str:
@@ -1147,9 +1130,39 @@ def _active_scan_conflict(org_db: str, body: ScanStartRequest) -> dict | None:
     return None
 
 
+def _require_scan_scope(org_db: str, targets: str):
+    try:
+        scope = ScanScope([row["target"] for row in get_allowed_scan_targets(org_db)])
+        scope.require(_split_scan_targets(targets))
+    except ScanScopeError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+@app.get("/api/scan-scope")
+def scan_scope(request: Request):
+    return {"items": get_allowed_scan_targets(_get_org_db(request))}
+
+
+@app.put("/api/scan-scope")
+def update_scan_scope(request: Request, body: ScanScopeRequest):
+    org_db = _get_org_db(request)
+    _require_platform_admin(request)
+    actor = request.session.get("user_email") or request.session.get("organization") or "api_key"
+    if getattr(request.state, "api_key_id", None):
+        actor = f"api_key:{request.state.api_key_id}"
+    try:
+        items = replace_allowed_scan_targets(org_db, body.targets, actor=actor, expected_org_id=request.state.authenticated_org_id)
+    except OrganizationConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"items": items}
+
+
 def _queue_scan(org_db: str, body: ScanStartRequest, schedule_id: int | None = None, allow_overlap: bool = False) -> int:
     """Create a scan record and enqueue it for scanner workers."""
     catalog = _validate_scan_payload(body)
+    _require_scan_scope(org_db, body.targets)
     if not allow_overlap:
         conflicting_scan = _active_scan_conflict(org_db, body)
         if conflicting_scan:
@@ -1193,6 +1206,8 @@ def _queue_scan(org_db: str, body: ScanStartRequest, schedule_id: int | None = N
     except Exception as exc:
         if scan_id is not None:
             update_scan_status(org_db, scan_id, "failed", error_message=str(exc)[:4000])
+        if isinstance(exc, ScanScopeError):
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         if isinstance(exc, ValueError):
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         raise
@@ -2388,6 +2403,12 @@ def scanner_worker_claim(request: Request, body: ScannerClaimRequest):
         capabilities=node.get("capabilities") or ["*"],
         lease_seconds=body.lease_seconds,
     )
+    if job:
+        try:
+            _require_scan_scope(job["org_db_name"], job["targets"])
+        except HTTPException as exc:
+            complete_scanner_job(job["id"], node["node_id"], "failed", str(exc.detail))
+            return {"job": None}
     return {"job": job}
 
 
@@ -2696,6 +2717,7 @@ def create_schedule(request: Request, body: ScheduleRequest):
     org_db = _get_org_db(request)
     _require_min_role(request, "security_analyst")
     _validate_scan_payload(body)
+    _require_scan_scope(org_db, body.targets)
     try:
         schedule_id = create_scan_schedule(
             org_db,

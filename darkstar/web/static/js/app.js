@@ -95,6 +95,9 @@ const state = {
     mfaPending: false,
     mfaSetupPending: false,
     organizationSelectionPending: false,
+    tenantSwitchPending: false,
+    scanScopeVersion: 0,
+    scanScopeOrgDb: null,
 };
 
 // ============================================================================
@@ -1395,6 +1398,7 @@ function setAuthUI() {
     if (dashboardPanel) dashboardPanel.classList.toggle("hidden", !state.authenticated);
     if (logoutBtn) logoutBtn.classList.toggle("hidden", !state.authenticated);
     if (!state.authenticated) {
+        invalidateScanScope();
         state.includeAcceptedRisks = false;
         document.querySelectorAll(".include-accepted-risks").forEach(input => { input.checked = false; });
         state.themeVersion += 1;
@@ -1449,6 +1453,7 @@ function renderTenantSwitch(me = {}) {
 }
 
 async function completeAuth(result, messageText = "Signed in.") {
+    invalidateScanScope();
     state.authenticated = true;
     state.themeVersion += 1;
     state.themeSaving = false;
@@ -2461,36 +2466,59 @@ function renderScannerNodeRows(nodes) {
     }).join("");
 }
 
-async function loadScanScope() {
-    const orgDb = state.orgDb;
+function invalidateScanScope() {
+    state.scanScopeVersion += 1;
+    state.scanScopeOrgDb = null;
     const input = document.getElementById("allowedTargetsInput");
-    const message = document.getElementById("scanScopeMessage");
+    input.value = "";
     input.readOnly = true;
     document.getElementById("saveScanScopeBtn").disabled = true;
+    document.getElementById("scanScopeMessage").textContent = "";
+}
+
+async function loadScanScope() {
+    invalidateScanScope();
+    if (state.tenantSwitchPending) return;
+    const orgDb = state.orgDb;
+    const version = state.scanScopeVersion;
+    const input = document.getElementById("allowedTargetsInput");
+    const message = document.getElementById("scanScopeMessage");
     try {
         const result = await requestJson("/api/scan-scope");
-        if (state.orgDb !== orgDb) return;
+        if (state.orgDb !== orgDb || state.scanScopeVersion !== version) return;
+        state.scanScopeOrgDb = orgDb;
         input.value = (result.items || []).map(item => item.target).join("\n");
         input.readOnly = state.role !== "platform_admin";
         document.getElementById("saveScanScopeBtn").disabled = input.readOnly;
         message.textContent = result.items.length ? "" : "Scans are blocked until a platform admin approves targets.";
-    } catch (error) { if (state.orgDb === orgDb) message.textContent = error.message; }
+    } catch (error) {
+        if (state.orgDb === orgDb && state.scanScopeVersion === version) message.textContent = error.message;
+    }
 }
 
 document.getElementById("saveScanScopeBtn").addEventListener("click", async event => {
-    if (state.role !== "platform_admin" || event.target.disabled) return;
+    if (state.role !== "platform_admin" || event.target.disabled || state.tenantSwitchPending || state.scanScopeOrgDb !== state.orgDb) return;
     event.target.disabled = true;
     const orgDb = state.orgDb;
+    const version = state.scanScopeVersion;
+    const input = document.getElementById("allowedTargetsInput");
+    input.readOnly = true;
     const message = document.getElementById("scanScopeMessage");
     try {
-        await requestJson("/api/scan-scope", { method: "PUT", body: JSON.stringify({
-            targets: document.getElementById("allowedTargetsInput").value.split(/[,\r\n]+/).map(item => item.trim()).filter(Boolean),
+        const result = await requestJson("/api/scan-scope", { method: "PUT", body: JSON.stringify({
+            targets: input.value.split(/[,\r\n]+/).map(item => item.trim()).filter(Boolean),
         }) });
-        if (state.orgDb !== orgDb) return;
-        await loadScanScope();
+        if (state.orgDb !== orgDb || state.scanScopeVersion !== version) return;
+        input.value = result.items.map(item => item.target).join("\n");
         message.textContent = "Allowed scan targets saved.";
-    } catch (error) { message.textContent = error.message; }
-    finally { event.target.disabled = state.role !== "platform_admin"; }
+    } catch (error) {
+        if (state.orgDb === orgDb && state.scanScopeVersion === version) message.textContent = error.message;
+    } finally {
+        if (state.orgDb === orgDb && state.scanScopeVersion === version) {
+            input.readOnly = state.role !== "platform_admin";
+            event.target.disabled = input.readOnly;
+        }
+    }
 });
 
 async function loadSecurityView() {
@@ -2969,17 +2997,25 @@ document.querySelectorAll("[data-tab-shortcut]").forEach(btn => {
 });
 
 async function switchTenant(orgDb) {
-    if (!orgDb || orgDb === state.orgDb) return;
-    const result = await requestJson("/api/auth/select-organization", {
-        method: "POST",
-        body: JSON.stringify({ org_db: orgDb }),
-    });
-    if (handleAuthStep(result)) {
-        setAuthUI();
-        return;
+    if (!orgDb || orgDb === state.orgDb || state.tenantSwitchPending) return;
+    // The session cookie can change before the organization response is handled.
+    state.tenantSwitchPending = true;
+    invalidateScanScope();
+    try {
+        const result = await requestJson("/api/auth/select-organization", {
+            method: "POST",
+            body: JSON.stringify({ org_db: orgDb }),
+        });
+        if (handleAuthStep(result)) {
+            setAuthUI();
+            return;
+        }
+        await completeAuth(result, "Tenant switched.");
+        await switchTab("dashboard");
+    } finally {
+        state.tenantSwitchPending = false;
+        if (state.currentTab === "settings" && state.authenticated) await loadScanScope();
     }
-    await completeAuth(result, "Tenant switched.");
-    await switchTab("dashboard");
 }
 
 document.getElementById("tenantSwitchSelect").addEventListener("change", async (event) => {

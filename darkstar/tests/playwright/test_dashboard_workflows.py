@@ -646,3 +646,95 @@ def test_scan_scope_settings_can_only_be_saved_by_platform_admin(darkstar_server
             assert state['unexpected'] == []
         finally:
             browser.close()
+
+
+@pytest.mark.parametrize('pending_operation', ['load', 'save', 'save_error'])
+def test_scan_scope_ignores_previous_tenant_requests(darkstar_server, pending_operation):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page(viewport={'width': 1440, 'height': 1100})
+            mock_state = _install_dashboard_mocks(page, darkstar_server)
+            active_org = 'tenant_db'
+            pending = []
+            switches = []
+            writes = []
+            hold_scope = False
+
+            def identity():
+                return {
+                    'authenticated': True, 'organization': active_org, 'org_db': active_org,
+                    'role': 'platform_admin', 'user': {'id': 1, 'theme': 'darkstar'},
+                    'organizations': [{'org_name': org, 'org_db_name': org, 'role': 'platform_admin'}
+                                      for org in ['tenant_db', 'other_tenant']],
+                }
+
+            def switch(route):
+                nonlocal active_org
+                active_org = route.request.post_data_json['org_db']
+                switches.append(route)
+
+            def scope(route):
+                if route.request.method == 'PUT':
+                    writes.append((active_org, route.request.post_data_json))
+                if hold_scope:
+                    pending.append(route)
+                else:
+                    _json(route, {'items': [{'target': '192.0.2.1'}]})
+
+            page.route('**/api/me', lambda route: _json(route, identity()))
+            page.route('**/api/auth/select-organization', switch)
+            page.route('**/api/scanner-nodes', lambda route: _json(route, {'items': []}))
+            page.route('**/api/admin/auth/policy', lambda route: _json(route, {}))
+            page.route('**/api/admin/organizations', lambda route: _json(route, {'items': []}))
+            page.route('**/api/admin/users', lambda route: _json(route, {'items': []}))
+            page.route('**/api/scan-scope', scope)
+            page.goto(darkstar_server, wait_until='networkidle')
+            page.locator('[data-tab="settings"]').click()
+            input_field = page.locator('#allowedTargetsInput')
+            save_button = page.locator('#saveScanScopeBtn')
+            expect(input_field).to_have_value('192.0.2.1')
+            expect(save_button).to_be_enabled()
+            hold_scope = True
+            with page.expect_request('**/api/scan-scope'):
+                if pending_operation == 'load':
+                    page.locator('[data-tab="dashboard"]').click()
+                    page.locator('[data-tab="settings"]').click()
+                else:
+                    input_field.fill('192.0.2.10')
+                    save_button.click()
+
+            with page.expect_request('**/api/auth/select-organization'):
+                page.locator('#tenantSwitchSelect').select_option('other_tenant')
+            # Lock immediately, before the new session's response reaches the UI.
+            expect(input_field).to_have_value('')
+            expect(input_field).not_to_be_editable()
+            expect(save_button).to_be_disabled()
+            _json(switches.pop(), identity())
+            expect(page.locator('#dashboard-tab.active')).to_be_visible()
+            with page.expect_request('**/api/scan-scope'):
+                page.locator('[data-tab="settings"]').click()
+
+            # The old request finishes while the new tenant's scope is loading.
+            with page.expect_response('**/api/scan-scope') as response:
+                if pending_operation == 'save_error':
+                    _json(pending.pop(0), {'detail': 'Old tenant save failed'}, status=409)
+                else:
+                    _json(pending.pop(0), {'items': [{'target': '192.0.2.10'}]})
+            response.value.finished()
+            page.evaluate('() => new Promise(resolve => requestAnimationFrame(resolve))')
+            expect(input_field).to_have_value('')
+            expect(input_field).not_to_be_editable()
+            expect(save_button).to_be_disabled()
+            expect(page.locator('#scanScopeMessage')).to_have_text('')
+
+            _json(pending.pop(0), {'items': [{'target': '198.51.100.1'}]})
+            expect(input_field).to_have_value('198.51.100.1')
+            expect(input_field).to_be_editable()
+            expect(save_button).to_be_enabled()
+            assert writes == ([] if pending_operation == 'load' else [('tenant_db', {'targets': ['192.0.2.10']})])
+            assert mock_state['unexpected'] == []
+        finally:
+            browser.close()

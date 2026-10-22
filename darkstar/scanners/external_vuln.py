@@ -18,7 +18,6 @@ import subprocess
 import tempfile
 import time
 from urllib.parse import urlparse, urlencode
-import xml.etree.ElementTree as ET
 
 from darkstar.scanner_profiles import profile_file, zap_policy_directory
 
@@ -432,6 +431,11 @@ class ZAPScanner:
 
     def _stop_daemon(self) -> None:
         """Gracefully shut down the ZAP daemon."""
+        if self.policy_name:
+            result = self._zap_api("JSON/ascan/action/removeScanPolicy/?" + urlencode({"scanPolicyName": self.policy_name}))
+            if not result or result.get("Result") != "OK":
+                logger.warning("Could not remove imported ZAP policy %s", self.policy_name)
+            self.policy_name = None
         try:
             import urllib.request
             urllib.request.urlopen(
@@ -464,8 +468,26 @@ class ZAPScanner:
             logger.warning("ZAP API call failed (%s): %s", path, exc)
             return None
 
+    def _load_policy(self) -> None:
+        """Import the selected file and use the name assigned by ZAP."""
+        path = profile_file(zap_policy_directory(), self.profile, {".policy"})
+        before = self._zap_api("JSON/ascan/view/scanPolicyNames/")
+        if not before or "scanPolicyNames" not in before:
+            raise RuntimeError("ZAP could not list its scan policies")
+        result = self._zap_api("JSON/ascan/action/importScanPolicy/?" + urlencode({"path": str(path)}))
+        if not result or result.get("Result") != "OK":
+            raise RuntimeError("ZAP could not import the selected policy")
+        after = self._zap_api("JSON/ascan/view/scanPolicyNames/")
+        if not after or "scanPolicyNames" not in after:
+            raise RuntimeError("ZAP could not identify the imported policy")
+        # ZAP uses the filename, adding a suffix if that policy already exists.
+        imported = set(after["scanPolicyNames"]) - set(before["scanPolicyNames"])
+        if len(imported) != 1:
+            raise RuntimeError("ZAP did not identify exactly one imported policy")
+        self.policy_name = imported.pop()
+
     def _scan_target(self, target: str) -> list[dict]:
-        """Spider and passive-scan one URL via the running ZAP daemon."""
+        """Spider a URL, run the selected policy if any, and collect alerts."""
         url = _ensure_scheme(target)
         hostname = _parse_host(url)
         findings: list[dict] = []
@@ -551,11 +573,7 @@ class ZAPScanner:
         total = 0
         try:
             if self.profile and self.profile != "default":
-                path = profile_file(zap_policy_directory(), self.profile, {".policy"})
-                self.policy_name = ET.parse(path).getroot().findtext("policy") or path.stem
-                result = self._zap_api("JSON/ascan/action/importScanPolicy/?" + urlencode({"path": str(path)}))
-                if not result or result.get("Result") != "OK":
-                    raise RuntimeError("ZAP could not import the selected policy")
+                self._load_policy()
             for target in self.targets:
                 findings = self._scan_target(target)
                 for f in findings:

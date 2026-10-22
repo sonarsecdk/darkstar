@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/static/css/app.css?v=20261012-themes" />
+    <link rel="stylesheet" href="/static/css/app.css?v=20261012-login" />
     <link rel="stylesheet" href="/static/css/themes.css?v=20261012" />
 </head>
 <body data-authenticated="{{ 'true' if logged_in else 'false' }}" data-organization="{{ organization }}" data-role="{{ role }}">
@@ -21,25 +21,25 @@
             </div>
 
             <form id="loginForm" class="login-form">
-                <div class="form-group">
+                <div class="form-group login-credentials">
                     <label for="emailInput">Email</label>
                     <input id="emailInput" name="email" type="email" placeholder="security@example.com" required />
                 </div>
-                <div class="form-group">
+                <div class="form-group login-credentials">
                     <label for="passwordInput">Password</label>
                     <input id="passwordInput" name="password" type="password" placeholder="Enter password" required minlength="8" />
                 </div>
-                <div class="form-group">
+                <div class="form-group login-credentials">
                     <label for="setupTokenInput">Setup token</label>
                     <input id="setupTokenInput" name="setup_token" type="password" placeholder="Only for first admin setup" autocomplete="off" />
                 </div>
                 <div id="orgChoiceGroup" class="form-group hidden">
-                    <label for="orgChoiceInput">Organisatie</label>
+                    <label for="orgChoiceInput">Organization</label>
                     <select id="orgChoiceInput" class="filter-select"></select>
-                    <button type="button" id="selectOrgBtn" class="btn-secondary btn-lg">Open organisatie</button>
+                    <button type="submit" id="selectOrgBtn" class="btn-primary btn-lg">Open organization</button>
                 </div>
                 <div id="mfaSetupLoginPanel" class="secret-panel hidden">
-                    <p class="form-message">MFA is verplicht. Voeg deze secret toe aan je authenticator en bevestig met een code.</p>
+                    <p class="form-message">Add this secret to your authenticator, then enter its verification code.</p>
                     <img id="mfaLoginQrImage" class="mfa-qr hidden" alt="MFA QR code" />
                     <code id="mfaLoginSecretOutput"></code>
                     <textarea id="mfaLoginOtpAuthOutput" rows="3" readonly></textarea>
@@ -48,13 +48,13 @@
                     <label for="mfaCodeInput">MFA code</label>
                     <input id="mfaCodeInput" name="mfa_code" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" />
                 </div>
-                <button type="submit" class="btn-primary btn-lg">Sign In</button>
-                <div class="form-group">
-                    <label for="ssoOrgInput">SSO organisatie</label>
-                    <input id="ssoOrgInput" name="sso_organization" type="text" placeholder="Organisatie voor SSO login" />
+                <button type="submit" id="loginSubmitBtn" class="btn-primary btn-lg">Sign In</button>
+                <div class="form-group login-sso">
+                    <label for="ssoOrgInput">SSO organization</label>
+                    <input id="ssoOrgInput" name="sso_organization" type="text" placeholder="Organization for SSO login" />
                 </div>
-                <button type="button" id="ssoLoginBtn" class="btn-secondary btn-lg">Sign in with SSO</button>
-                <p id="loginMessage" class="form-message"></p>
+                <button type="button" id="ssoLoginBtn" class="btn-secondary btn-lg login-sso">Sign in with SSO</button>
+                <p id="loginMessage" class="form-message" role="status" aria-live="polite"></p>
             </form>
         </div>
     </div>
@@ -1191,6 +1191,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=20261012-themes"></script>
+    <script src="/static/js/app.js?v=20261012-login"></script>
 </body>
 </html>

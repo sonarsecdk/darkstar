@@ -2,7 +2,7 @@
 """
 Mail Security Scanner - SPF and DMARC Vulnerability Detection
 Checks for common SPF and DMARC misconfigurations and vulnerabilities
-With database integration and Dutch translations
+With database integration and vulnerability descriptions
 """
 
 import dns.resolver
@@ -34,162 +34,162 @@ class MailSecurityScanner:
             load_dotenv(env_file)
             # self.setup_database()
             
-        # Dutch vulnerability translations and detailed information
+        # Vulnerability descriptions and detailed information
         self.vulnerability_translations = {
             'SPF_MISSING': {
-                'title': 'Ontbrekend SPF Record',
-                'description': 'Geen SPF (Sender Policy Framework) record gevonden voor het domein. Dit maakt het domein kwetsbaar voor email spoofing en phishing aanvallen.',
-                'recommendation': 'Configureer een SPF record om te specificeren welke servers geautoriseerd zijn om email te verzenden voor uw domein. Voeg een TXT record toe zoals: "v=spf1 include:_spf.google.com ~all"',
+                'title': 'Missing SPF Record',
+                'description': 'No SPF (Sender Policy Framework) record was found for the domain. This leaves the domain vulnerable to email spoofing and phishing attacks.',
+                'recommendation': 'Configure an SPF record to specify which servers are authorized to send email for your domain. Add a TXT record such as: "v=spf1 include:_spf.google.com ~all"',
                 'references': 'RFC 7208, NIST Cybersecurity Framework, https://www.spf-record.com/'
             },
             'DMARC_MISSING': {
-                'title': 'Ontbrekend DMARC Record', 
-                'description': 'Geen DMARC (Domain-based Message Authentication) record gevonden. DMARC biedt bescherming tegen email spoofing door SPF en DKIM resultaten te combineren.',
-                'recommendation': 'Configureer een DMARC record om bescherming tegen email spoofing en phishing aanvallen te bieden. Begin met "v=DMARC1; p=none; rua=mailto:dmarc@uwdomein.nl" voor monitoring.',
-                'references': 'RFC 7489, NCSC Richtlijnen Email Beveiliging, https://dmarc.org/'
+                'title': 'Missing DMARC Record',
+                'description': 'No DMARC (Domain-based Message Authentication) record was found. DMARC protects against email spoofing by combining SPF and DKIM results.',
+                'recommendation': 'Configure a DMARC record to protect against email spoofing and phishing attacks. Start with "v=DMARC1; p=none; rua=mailto:dmarc@example.com" for monitoring.',
+                'references': 'RFC 7489, NCSC Email Security Guidelines, https://dmarc.org/'
             },
             'SPF_SYNTAX_ERROR': {
-                'title': 'SPF Syntaxfout',
-                'description': 'Het SPF record bevat syntaxfouten die kunnen leiden tot incorrecte interpretatie door email servers en verminderde beveiliging.',
-                'recommendation': 'Corrigeer de syntaxfouten in het SPF record. Zorg ervoor dat het record begint met "v=spf1" gevolgd door geldige mechanismen.',
+                'title': 'SPF Syntax Error',
+                'description': 'The SPF record contains syntax errors that may cause email servers to interpret it incorrectly and reduce security.',
+                'recommendation': 'Correct the syntax errors in the SPF record. Ensure that the record starts with "v=spf1" followed by valid mechanisms.',
                 'references': 'RFC 7208 Section 4, SPF Record Syntax Guide'
             },
             'SPF_DEPRECATED_PTR': {
-                'title': 'Verouderd PTR Mechanisme in SPF',
-                'description': 'Het SPF record gebruikt het verouderde "ptr" mechanisme dat onbetrouwbaar is en email levering kan vertragen door DNS lookup problemen.',
-                'recommendation': 'Vervang het "ptr" mechanisme door betrouwbaardere alternatieven zoals "ip4", "a", of "include" mechanismen die beter prestaties en betrouwbaarheid bieden.',
+                'title': 'Deprecated PTR Mechanism in SPF',
+                'description': 'The SPF record uses the deprecated "ptr" mechanism, which is unreliable and may delay email delivery due to DNS lookup problems.',
+                'recommendation': 'Replace the "ptr" mechanism with more reliable alternatives such as "ip4", "a", or "include" mechanisms for better performance and reliability.',
                 'references': 'RFC 7208 Section 5.5, Best Practices for SPF'
             },
             'SPF_MULTIPLE_RECORDS': {
-                'title': 'Meerdere SPF Records',
-                'description': 'Er zijn meerdere SPF records gevonden voor dit domein. Dit is niet toegestaan en kan leiden tot onvoorspelbaar gedrag bij email validatie.',
-                'recommendation': 'Voeg alle SPF mechanismen samen in één enkel geldig SPF record. Verwijder duplicate records en consolideer alle autorisaties.',
+                'title': 'Multiple SPF Records',
+                'description': 'Multiple SPF records were found for this domain. This is not allowed and may cause unpredictable email validation behavior.',
+                'recommendation': 'Merge all SPF mechanisms into a single valid SPF record. Remove duplicate records and consolidate all authorizations.',
                 'references': 'RFC 7208 Section 3.2, SPF Implementation Guidelines'
             },
             'SPF_RECORD_TOO_LONG': {
-                'title': 'SPF Record Te Lang',
-                'description': 'Het SPF record overschrijdt de maximale lengte van 512 karakters, wat kan leiden tot DNS problemen en incorrecte verwerking.',
-                'recommendation': 'Verkort het SPF record door onnodige mechanismen te verwijderen of door gebruik te maken van include mechanismen voor complexe configuraties.',
+                'title': 'SPF Record Too Long',
+                'description': 'The SPF record exceeds the maximum length of 512 characters, which may cause DNS problems and incorrect processing.',
+                'recommendation': 'Shorten the SPF record by removing unnecessary mechanisms or using include mechanisms for complex configurations.',
                 'references': 'RFC 1035 Section 2.3.4, DNS Message Format'
             },
             'SPF_MISSING_ALL': {
-                'title': 'Ontbrekend "all" Mechanisme',
-                'description': 'Het SPF record mist het "all" mechanisme dat bepaalt hoe om te gaan met servers die niet expliciet geautoriseerd zijn.',
-                'recommendation': 'Voeg een geschikt "all" mechanisme toe aan het einde van uw SPF record. Gebruik "~all" voor soft fail of "-all" voor hard fail.',
+                'title': 'Missing "all" Mechanism',
+                'description': 'The SPF record lacks the "all" mechanism, which determines how to handle servers that are not explicitly authorized.',
+                'recommendation': 'Add an appropriate "all" mechanism at the end of your SPF record. Use "~all" for soft fail or "-all" for hard fail.',
                 'references': 'RFC 7208 Section 5.1, SPF All Mechanism'
             },
             'SPF_PERMISSIVE_ALL': {
-                'title': 'Te Permissief "all" Mechanisme',
-                'description': 'Het SPF record gebruikt "+all" of "all" wat alle servers toestaat om email te verzenden, waardoor bescherming tegen spoofing wordt weggenomen.',
-                'recommendation': 'Wijzig naar een restrictiever "all" mechanisme zoals "~all" (soft fail) of "-all" (hard fail) om ongeautoriseerde verzenders te blokkeren.',
+                'title': 'Overly Permissive "all" Mechanism',
+                'description': 'The SPF record uses "+all" or "all", which allows all servers to send email and removes protection against spoofing.',
+                'recommendation': 'Change to a more restrictive "all" mechanism such as "~all" (soft fail) or "-all" (hard fail) to block unauthorized senders.',
                 'references': 'SPF Best Practices, Email Security Guidelines'
             },
             'SPF_DOMAIN_TYPO': {
-                'title': 'Mogelijke Typefout in SPF Domein',
-                'description': 'Een potentiële typefout gedetecteerd in een include statement van het SPF record, wat kan leiden tot DNS lookup fouten en verminderde beveiliging.',
-                'recommendation': 'Controleer en corrigeer de domeinnaam in het include statement om ervoor te zorgen dat deze correct gespeld is.',
+                'title': 'Possible Typo in SPF Domain',
+                'description': 'A possible typo was detected in an include statement in the SPF record, which may cause DNS lookup failures and reduce security.',
+                'recommendation': 'Check and correct the domain name in the include statement to ensure it is spelled correctly.',
                 'references': 'SPF Record Validation Tools, DNS Best Practices'
             },
             'DMARC_MONITORING_ONLY': {
-                'title': 'DMARC Alleen Monitoring Modus',
-                'description': 'DMARC beleid staat ingesteld op monitoring modus (p=none) wat geen daadwerkelijke bescherming biedt tegen email spoofing aanvallen.',
-                'recommendation': 'Wijzig het DMARC beleid naar "p=quarantine" of "p=reject" om daadwerkelijke bescherming tegen spoofing te implementeren na analyse van DMARC rapporten.',
+                'title': 'DMARC Monitoring Only',
+                'description': 'The DMARC policy is set to monitoring mode (p=none), which does not actively protect against email spoofing attacks.',
+                'recommendation': 'Change the DMARC policy to "p=quarantine" or "p=reject" to enforce spoofing protection after analyzing DMARC reports.',
                 'references': 'RFC 7489 Section 6.3, DMARC Deployment Guide'
             },
             'DMARC_PARTIAL_ENFORCEMENT': {
-                'title': 'DMARC Gedeeltelijke Handhaving',
-                'description': 'DMARC percentage is ingesteld op minder dan 100%, waardoor sommige gespoofde emails nog steeds kunnen worden afgeleverd.',
-                'recommendation': 'Stel pct=100 in of verwijder de pct tag voor volledige bescherming. Gedeeltelijke handhaving biedt geen complete beveiliging.',
+                'title': 'Partial DMARC Enforcement',
+                'description': 'The DMARC percentage is set below 100%, allowing some spoofed emails to be delivered.',
+                'recommendation': 'Set pct=100 or remove the pct tag for full protection. Partial enforcement does not provide complete protection.',
                 'references': 'DMARC Best Practices, Email Authentication Standards'
             },
             'DMARC_NO_SUBDOMAIN_POLICY': {
-                'title': 'Geen DMARC Subdomain Beleid',
-                'description': 'DMARC record mist een expliciet subdomain beleid (sp=), waardoor subdomeinen kwetsbaar kunnen zijn voor spoofing aanvallen.',
-                'recommendation': 'Voeg "sp=reject" of "sp=quarantine" toe om subdomeinen te beschermen tegen spoofing aanvallen.',
+                'title': 'Missing DMARC Subdomain Policy',
+                'description': 'The DMARC record lacks an explicit subdomain policy (sp=), which may leave subdomains vulnerable to spoofing attacks.',
+                'recommendation': 'Add "sp=reject" or "sp=quarantine" to protect subdomains against spoofing attacks.',
                 'references': 'RFC 7489 Section 6.3, Subdomain Policy Guidelines'
             },
             'DMARC_WEAK_SUBDOMAIN_POLICY': {
-                'title': 'Zwak DMARC Subdomain Beleid',
-                'description': 'DMARC subdomain beleid staat ingesteld op "sp=none" wat spoofing van subdomeinen toestaat.',
-                'recommendation': 'Wijzig het subdomain beleid naar "sp=quarantine" of "sp=reject" voor betere beveiliging van subdomeinen.',
+                'title': 'Weak DMARC Subdomain Policy',
+                'description': 'The DMARC subdomain policy is set to "sp=none", allowing subdomain spoofing.',
+                'recommendation': 'Change the subdomain policy to "sp=quarantine" or "sp=reject" for better subdomain protection.',
                 'references': 'DMARC Security Guidelines, Subdomain Protection'
             },
             'DMARC_SPF_ALIGNMENT_RELAXED': {
                 'title': 'Relaxed SPF Alignment',
-                'description': 'SPF alignment is relaxed (aspf=r) of niet gespecificeerd, wat minder strikte verificatie betekent en potentiële beveiligingsrisicos kan introduceren.',
-                'recommendation': 'Overweeg het instellen van "aspf=s" voor strikte SPF alignment voor betere beveiliging, mits dit geen legitieme email blokkeert.',
+                'description': 'SPF alignment is relaxed (aspf=r) or unspecified, meaning less strict verification and potential security risks.',
+                'recommendation': 'Consider setting "aspf=s" for strict SPF alignment to improve security, provided this does not block legitimate email.',
                 'references': 'RFC 7489 Section 3.1, DMARC Alignment Modes'
             },
             'DMARC_DKIM_ALIGNMENT_RELAXED': {
                 'title': 'Relaxed DKIM Alignment',
-                'description': 'DKIM alignment is relaxed (adkim=r) of niet gespecificeerd, wat minder strikte verificatie betekent.',
-                'recommendation': 'Overweeg het instellen van "adkim=s" voor strikte DKIM alignment voor betere beveiliging.',
+                'description': 'DKIM alignment is relaxed (adkim=r) or unspecified, meaning less strict verification.',
+                'recommendation': 'Consider setting "adkim=s" for strict DKIM alignment to improve security.',
                 'references': 'RFC 7489 Section 3.1, DKIM Alignment Best Practices'
             },
             'DMARC_SYNTAX_ERROR': {
-                'title': 'DMARC Syntaxfout',
-                'description': 'DMARC record bevat syntaxfouten die kunnen leiden tot incorrecte verwerking door email servers.',
-                'recommendation': 'Corrigeer de syntaxfouten in het DMARC record. Zorg ervoor dat het begint met "v=DMARC1".',
+                'title': 'DMARC Syntax Error',
+                'description': 'The DMARC record contains syntax errors that may cause email servers to process it incorrectly.',
+                'recommendation': 'Correct the syntax errors in the DMARC record. Ensure it starts with "v=DMARC1".',
                 'references': 'RFC 7489 Section 6.3, DMARC Record Format'
             },
             'DMARC_INCORRECT_ORDER': {
-                'title': 'Incorrecte DMARC Tag Volgorde',
-                'description': 'DMARC tags staan niet in de correcte volgorde, wat kan leiden tot parsing problemen bij sommige email servers.',
-                'recommendation': 'Reorganiseer het DMARC record om te beginnen met "v=DMARC1;" gevolgd door het beleid en andere tags.',
+                'title': 'Incorrect DMARC Tag Order',
+                'description': 'The DMARC tags are not in the correct order, which may cause parsing problems on some email servers.',
+                'recommendation': 'Reorder the DMARC record to start with "v=DMARC1;" followed by the policy and other tags.',
                 'references': 'DMARC Specification, Tag Ordering Guidelines'
             },
             'DMARC_NO_REPORTING': {
-                'title': 'Geen DMARC Rapportage Configuratie',
-                'description': 'DMARC record mist een aggregate rapportage adres (rua=), waardoor belangrijke feedback over email authenticatie ontbreekt.',
-                'recommendation': 'Voeg "rua=mailto:dmarc@uwdomein.nl" toe om DMARC rapporten te ontvangen voor monitoring en analyse.',
+                'title': 'Missing DMARC Reporting Configuration',
+                'description': 'The DMARC record lacks an aggregate reporting address (rua=), preventing important feedback about email authentication.',
+                'recommendation': 'Add "rua=mailto:dmarc@example.com" to receive DMARC reports for monitoring and analysis.',
                 'references': 'RFC 7489 Section 7, DMARC Reporting Mechanisms'
             },
             'MTA_STS_MISSING': {
-                'title': 'Ontbrekend MTA-STS Record',
-                'description': 'Geen MTA-STS (Mail Transfer Agent Strict Transport Security) record gevonden. Dit maakt email transport kwetsbaar voor man-in-the-middle aanvallen.',
-                'recommendation': 'Configureer een MTA-STS record om beveiligde email transport af te dwingen. Voeg een TXT record toe aan _mta-sts.yourdomain.com met "v=STSv1; id=timestamp"',
+                'title': 'Missing MTA-STS Record',
+                'description': 'No MTA-STS (Mail Transfer Agent Strict Transport Security) record was found. This leaves email transport vulnerable to man-in-the-middle attacks.',
+                'recommendation': 'Configure an MTA-STS record to enforce secure email transport. Add a TXT record at _mta-sts.yourdomain.com with "v=STSv1; id=timestamp"',
                 'references': 'RFC 8461, MTA-STS Implementation Guide'
             },
             'MTA_STS_INVALID_FORMAT': {
-                'title': 'Ongeldig MTA-STS Record Formaat',
-                'description': 'Het MTA-STS DNS record heeft een ongeldig formaat of ontbreekt vereiste velden.',
-                'recommendation': 'Corrigeer het MTA-STS record formaat. Het moet beginnen met "v=STSv1" en een "id" veld bevatten.',
+                'title': 'Invalid MTA-STS Record Format',
+                'description': 'The MTA-STS DNS record has an invalid format or is missing required fields.',
+                'recommendation': 'Correct the MTA-STS record format. It must start with "v=STSv1" and contain an "id" field.',
                 'references': 'RFC 8461 Section 3.1, MTA-STS DNS Record Format'
             },
             'MTA_STS_POLICY_FILE_MISSING': {
-                'title': 'MTA-STS Policy Bestand Ontbreekt',
-                'description': 'Het MTA-STS policy bestand is niet bereikbaar via HTTPS op de verwachte locatie /.well-known/mta-sts.txt',
-                'recommendation': 'Maak het MTA-STS policy bestand beschikbaar op https://mta-sts.yourdomain.com/.well-known/mta-sts.txt',
+                'title': 'Missing MTA-STS Policy File',
+                'description': 'The MTA-STS policy file is not accessible via HTTPS at the expected location /.well-known/mta-sts.txt',
+                'recommendation': 'Make the MTA-STS policy file available at https://mta-sts.yourdomain.com/.well-known/mta-sts.txt',
                 'references': 'RFC 8461 Section 3.2, MTA-STS Policy File'
             },
             'MTA_STS_POLICY_INVALID': {
-                'title': 'Ongeldig MTA-STS Policy Bestand',
-                'description': 'Het MTA-STS policy bestand bevat ongeldige syntax of ontbreekt vereiste velden.',
-                'recommendation': 'Corrigeer het policy bestand om geldige STSv1 syntax te gebruiken met versie, mode, mx servers en max_age.',
+                'title': 'Invalid MTA-STS Policy File',
+                'description': 'The MTA-STS policy file contains invalid syntax or is missing required fields.',
+                'recommendation': 'Correct the policy file to use valid STSv1 syntax with version, mode, mx servers, and max_age.',
                 'references': 'RFC 8461 Section 3.2, Policy File Format'
             },
             'MTA_STS_WEAK_MODE': {
-                'title': 'Zwakke MTA-STS Mode',
-                'description': 'MTA-STS policy staat ingesteld op "testing" of "none" mode wat geen daadwerkelijke bescherming biedt.',
-                'recommendation': 'Wijzig de MTA-STS mode naar "enforce" voor daadwerkelijke bescherming tegen downgrade aanvallen.',
+                'title': 'Weak MTA-STS Mode',
+                'description': 'The MTA-STS policy is set to "testing" or "none" mode, which does not provide active protection.',
+                'recommendation': 'Change the MTA-STS mode to "enforce" for protection against downgrade attacks.',
                 'references': 'MTA-STS Best Practices, RFC 8461'
             },
             'MTA_STS_SSL_ERROR': {
-                'title': 'MTA-STS SSL Certificaat Probleem',
-                'description': 'Het SSL certificaat voor de MTA-STS subdomain is ongeldig, verlopen of niet vertrouwd.',
-                'recommendation': 'Installeer een geldig SSL certificaat voor mta-sts.yourdomain.com dat vertrouwd wordt door browsers.',
+                'title': 'MTA-STS SSL Certificate Problem',
+                'description': 'The SSL certificate for the MTA-STS subdomain is invalid, expired, or untrusted.',
+                'recommendation': 'Install a valid SSL certificate for mta-sts.yourdomain.com that browsers trust.',
                 'references': 'SSL/TLS Best Practices, Certificate Authority Guidelines'
             },
             'MTA_STS_CONTENT_TYPE_ERROR': {
-                'title': 'Onjuist MTA-STS Content-Type',
-                'description': 'Het MTA-STS policy bestand wordt niet geserveerd met het juiste content-type.',
-                'recommendation': 'Configureer de webserver om mta-sts.txt te serveren met content-type "text/plain".',
+                'title': 'Incorrect MTA-STS Content-Type',
+                'description': 'The MTA-STS policy file is not served with the correct content type.',
+                'recommendation': 'Configure the web server to serve mta-sts.txt with the content type "text/plain".',
                 'references': 'RFC 8461 Section 3.2, HTTP Response Requirements'
             }
         }
 
     def log_vulnerability(self, domain: str, severity: str, code: str, description: str, recommendation: str):
-        """Log a vulnerability with details and Dutch translation if available"""
+        """Log a vulnerability with its description and recommendation"""
         if (severity or "").lower() == "baseline":
             severity = "info"
         vulnerability = Vulnerability(
@@ -491,8 +491,8 @@ class MailSecurityScanner:
                 domain,
                 'Low',
                 'DMARC_SPF_ALIGNMENT_RELAXED',
-                'SPF alignment is relaxed (aspf=r) of niet gespecificeerd',
-                'Overweeg het instellen van "aspf=s" voor strikte SPF alignment voor betere beveiliging'
+                'SPF alignment is relaxed (aspf=r) or unspecified',
+                'Consider setting "aspf=s" for strict SPF alignment to improve security'
             )
             
         if 'adkim=s' not in dmarc_record:
@@ -500,8 +500,8 @@ class MailSecurityScanner:
                 domain,
                 'Low',
                 'DMARC_DKIM_ALIGNMENT_RELAXED',
-                'DKIM alignment is relaxed (adkim=r) of niet gespecificeerd',
-                'Overweeg het instellen van "adkim=s" voor strikte DKIM alignment voor betere beveiliging'
+                'DKIM alignment is relaxed (adkim=r) or unspecified',
+                'Consider setting "adkim=s" for strict DKIM alignment to improve security'
             )
             
     def check_dmarc_syntax_order(self, domain: str, dmarc_record: str):

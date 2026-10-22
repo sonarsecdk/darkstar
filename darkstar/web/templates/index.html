@@ -682,33 +682,33 @@
                             <div class="form-group">
                                 <label for="scannerInput">Individual Scanner (optional)</label>
                                 <select id="scannerInput" name="scanner" class="filter-select">
-                                    <option value="">Kies scanner</option>
+                                    <option value="">Select scanner</option>
                                     <optgroup label="Recon / Discovery">
-                                        <option value="bbot_passive">BBot – passief</option>
-                                        <option value="bbot_normal">BBot – normaal</option>
-                                        <option value="bbot_aggressive">BBot – agressief</option>
+                                        <option value="bbot_passive">BBot – passive</option>
+                                        <option value="bbot_normal">BBot – normal</option>
+                                        <option value="bbot_aggressive">BBot – aggressive</option>
                                         <option value="bbot_attack_surface">BBot – attack surface</option>
-                                        <option value="rustscan">RustScan – poortscan</option>
+                                        <option value="rustscan">RustScan – port scan</option>
                                     </optgroup>
                                     <optgroup label="Web DAST">
                                         <option value="nikto">Nikto – web server check</option>
                                         <option value="wapiti">Wapiti – web DAST</option>
-                                        <option value="zap">OWASP ZAP – passieve baseline</option>
+                                        <option value="zap">OWASP ZAP – passive baseline</option>
                                         <option value="dalfox">Dalfox – XSS scanner</option>
                                     </optgroup>
-                                    <optgroup label="TLS / Netwerk">
+                                    <optgroup label="TLS / Network">
                                         <option value="testssl">testssl.sh – TLS/SSL audit</option>
-                                        <option value="openvas">OpenVAS – netwerk vuln scan</option>
+                                        <option value="openvas">OpenVAS – network vulnerability scan</option>
                                     </optgroup>
                                     <optgroup label="Nuclei templates">
-                                        <option value="nuclei">Nuclei – standaard</option>
-                                        <option value="nucleinetwork">Nuclei – netwerk templates</option>
+                                        <option value="nuclei">Nuclei – standard</option>
+                                        <option value="nucleinetwork">Nuclei – network templates</option>
                                         <option value="wordpressnuclei">Nuclei – WordPress</option>
                                     </optgroup>
                                     <optgroup label="Asteroid modules">
-                                        <option value="asteroid_normal">Asteroid – normaal</option>
-                                        <option value="asteroid_aggressive">Asteroid – agressief</option>
-                                        <option value="retirejs">RetireJS – kwetsbare JS libs</option>
+                                        <option value="asteroid_normal">Asteroid – normal</option>
+                                        <option value="asteroid_aggressive">Asteroid – aggressive</option>
+                                        <option value="retirejs">RetireJS – vulnerable JavaScript libraries</option>
                                         <option value="vulnscan">Vulnscan – custom templates</option>
                                     </optgroup>
                                 </select>
@@ -861,7 +861,7 @@
                     <div class="filter-grid">
                         <div class="form-group">
                             <label for="adminUserEmailInput">Email</label>
-                            <input id="adminUserEmailInput" type="email" placeholder="analist@example.com" />
+                            <input id="adminUserEmailInput" type="email" placeholder="analyst@example.com" />
                         </div>
                         <div class="form-group">
                             <label for="adminUserPasswordInput">Password</label>
@@ -1061,7 +1061,7 @@
                         <button type="button" id="createApiKeyBtn" class="btn-primary">Create API Key</button>
                     </div>
                     <div id="apiKeyCreatedPanel" class="secret-panel hidden">
-                        <p class="form-message">Kopieer deze key nu. Hij wordt daarna niet opnieuw getoond.</p>
+                        <p class="form-message">Copy this key now. It will not be shown again.</p>
                         <code id="apiKeyCreatedOutput"></code>
                     </div>
                     <div class="table-container">
@@ -1072,7 +1072,7 @@
                             <tbody id="apiKeyRows"></tbody>
                         </table>
                     </div>
-                    <p class="form-message">Gebruik de REST API met <code>Authorization: Bearer dstar_...</code>. FastAPI docs staan op <code>/docs</code> en OpenAPI op <code>/openapi.json</code>.</p>
+                    <p class="form-message">Use the REST API with <code>Authorization: Bearer dstar_...</code>. FastAPI documentation is available at <code>/docs</code> and OpenAPI at <code>/openapi.json</code>.</p>
                     <p id="apiKeyMessage" class="form-message"></p>
                 </div>
             </div>
@@ -1209,6 +1209,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=20261012-login"></script>
+    <script src="/static/js/app.js?v=20261022-english"></script>
 </body>
 </html>

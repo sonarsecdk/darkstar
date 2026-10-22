@@ -243,8 +243,26 @@ or vulnerability.
 2. Check host, CVE, exploit status and tool.
 3. Open details for evidence and score context.
 4. Export the relevant set as a CSV, XLSX or HTML report.
-5. Record false positives or accepted risks outside Darkstar in the ticket or
-   risk register.
+5. Use **Accept risk** in a network or endpoint finding's details when a risk
+   has been reviewed. Security analysts, tenant admins and platform admins can
+   accept or revoke it; viewers can read the status. A reason is required and
+   expiry is optional. Expiry is entered in local time and stored in UTC.
+
+Accepted risks are hidden by default from findings, priority summaries and
+notification totals. **Include accepted risks** shows them in the dashboard and
+finding views and includes them in exported reports, labeled as accepted. The
+original scan evidence remains stored. Acceptance and revocation are audited.
+
+Acceptance belongs to one organization and matches the same asset and finding
+across rescans. Network findings match host, scanner, CVE, title and affected
+component/path; paths remain case-sensitive. A changed title or component is
+shown again for review. Endpoint findings match agent, software key, CVE and
+source. Acceptance does not carry over to another asset or organization.
+
+Rollback: reverting the risk-acceptance merge restores the previous display
+behavior, so accepted findings become visible again. The additive
+`risk_acceptances` table and audit entries can remain for later reinstatement;
+no finding data needs to be deleted or restored.
 
 ## Attack Surface
 

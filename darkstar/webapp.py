@@ -52,6 +52,7 @@ from .core.db_helper import (
     complete_scanner_job,
     authenticate_user,
     record_audit_event,
+    set_risk_acceptance,
     create_api_key,
     create_endpoint_enrollment_token,
     create_scanner_node,
@@ -449,6 +450,11 @@ class OrgUserRequest(BaseModel):
     role: str = Field(default="viewer", max_length=32)
 
 
+class RiskAcceptanceRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=4000)
+    expires_at: datetime | None = None
+
+
 class ScanStartRequest(BaseModel):
     targets: str = Field(min_length=1)
     mode: int | None = Field(default=None)
@@ -615,6 +621,7 @@ def _get_org_db(request: Request) -> str:
         request.state.api_org_db = api_context["org_db_name"]
         request.state.authenticated_org_id = api_context["org_id"]
         request.state.api_role = api_context.get("role") or "tenant_admin"
+        request.state.api_key_id = api_context.get("id")
         request.state.api_organization = api_context.get("org_name")
         return api_context["org_db_name"]
 
@@ -1973,9 +1980,9 @@ def delete_rest_api_key(request: Request, key_id: int):
 
 
 @app.get("/api/endpoints/overview")
-def endpoint_overview(request: Request):
+def endpoint_overview(request: Request, include_accepted: bool = False):
     org_db = _get_org_db(request)
-    return get_endpoint_overview(org_db)
+    return get_endpoint_overview(org_db, include_accepted=include_accepted)
 
 
 @app.get("/api/endpoints/enrollment-tokens")
@@ -2010,10 +2017,11 @@ def endpoint_agents(
     status: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    include_accepted: bool = False,
 ):
     org_db = _get_org_db(request)
     _require_min_role(request, "viewer")
-    return list_endpoint_agents(org_db, search=search, status=status, limit=limit, offset=offset)
+    return list_endpoint_agents(org_db, search=search, status=status, limit=limit, offset=offset, include_accepted=include_accepted)
 
 
 @app.get("/api/endpoints/agents/{agent_id}")
@@ -2026,10 +2034,10 @@ def endpoint_agent_detail(request: Request, agent_id: str):
 
 
 @app.get("/api/endpoints/network-map")
-def endpoint_network_map(request: Request):
+def endpoint_network_map(request: Request, include_accepted: bool = False):
     org_db = _get_org_db(request)
     _require_min_role(request, "viewer")
-    return get_endpoint_network_map(org_db)
+    return get_endpoint_network_map(org_db, include_accepted=include_accepted)
 
 
 @app.post("/api/endpoints/agents/{agent_id}/revoke")
@@ -2070,6 +2078,7 @@ def endpoint_vulnerabilities(
     severity: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    include_accepted: bool = False,
 ):
     org_db = _get_org_db(request)
     return list_endpoint_vulnerabilities(
@@ -2079,6 +2088,7 @@ def endpoint_vulnerabilities(
         severity=severity,
         limit=limit,
         offset=offset,
+        include_accepted=include_accepted,
     )
 
 
@@ -2345,9 +2355,9 @@ def rest_api_status(request: Request):
 
 
 @app.get("/api/vulnerabilities")
-def vulnerabilities(request: Request, limit: int = 200):
+def vulnerabilities(request: Request, limit: int = 200, include_accepted: bool = False):
     org_db = _get_org_db(request)
-    return {"items": get_latest_vulnerabilities(org_db, limit=limit)}
+    return {"items": get_latest_vulnerabilities(org_db, limit=limit, include_accepted=include_accepted)}
 
 
 @app.get("/api/assets")
@@ -2357,9 +2367,9 @@ def assets(request: Request, limit: int = 100):
 
 
 @app.get("/api/attack-surface")
-def attack_surface(request: Request, search: str | None = None, limit: int = 100, offset: int = 0):
+def attack_surface(request: Request, search: str | None = None, limit: int = 100, offset: int = 0, include_accepted: bool = False):
     org_db = _get_org_db(request)
-    return get_attack_surface_overview(org_db, search=search, limit=limit, offset=offset)
+    return get_attack_surface_overview(org_db, search=search, limit=limit, offset=offset, include_accepted=include_accepted)
 
 
 @app.get("/api/recon/subdomains")
@@ -2401,9 +2411,9 @@ def scan_detail(request: Request, scan_id: int):
 
 
 @app.get("/api/stats")
-def stats(request: Request):
+def stats(request: Request, include_accepted: bool = False):
     org_db = _get_org_db(request)
-    return get_vulnerability_stats(org_db)
+    return get_vulnerability_stats(org_db, include_accepted=include_accepted)
 
 
 @app.post("/api/scans/start")
@@ -2453,10 +2463,11 @@ def get_filtered_vulnerabilities(
     limit: int = 50,
     offset: int = 0,
     dedupe: bool = False,
+    include_accepted: bool = False,
 ):
     """Get vulnerabilities with filtering and pagination."""
     org_db = _get_org_db(request)
-    items, total = get_vulnerabilities_filtered(org_db, severity, host, tool, limit, offset, dedupe=dedupe)
+    items, total = get_vulnerabilities_filtered(org_db, severity, host, tool, limit, offset, dedupe=dedupe, include_accepted=include_accepted)
     return {
         "items": items,
         "total": total,
@@ -2490,10 +2501,10 @@ def get_tools_filter(request: Request):
 
 
 @app.get("/api/vulnerabilities/grouped")
-def grouped_vulnerabilities(request: Request, group_by: str = "asset"):
+def grouped_vulnerabilities(request: Request, group_by: str = "asset", include_accepted: bool = False):
     """Get server-side grouped vulnerabilities by asset or vulnerability."""
     org_db = _get_org_db(request)
-    return {"items": get_grouped_vulnerabilities(org_db, group_by=group_by)}
+    return {"items": get_grouped_vulnerabilities(org_db, group_by=group_by, include_accepted=include_accepted)}
 
 
 @app.get("/api/vulnerabilities/{vulnerability_id}")
@@ -2504,6 +2515,41 @@ def vulnerability_detail(request: Request, vulnerability_id: int):
     if not row:
         raise HTTPException(status_code=404, detail="Vulnerability not found")
     return row
+
+
+
+def _write_risk_acceptance(request: Request, finding_id: int, body: RiskAcceptanceRequest | None = None):
+    org_db = _get_org_db(request)
+    _require_min_role(request, "security_analyst")
+    kind = "endpoint" if request.url.path.startswith("/api/endpoints/") else "network"
+    actor = request.session.get("user_email") or request.session.get("organization")
+    if getattr(request.state, "api_key_id", None) is not None:
+        actor = f"api_key:{request.state.api_key_id}"
+    try:
+        changed = set_risk_acceptance(
+            org_db, kind, finding_id, actor=actor or "api_key",
+            reason=body.reason if body else None, expires_at=body.expires_at if body else None,
+            revoke=body is None, expected_org_id=request.state.authenticated_org_id,
+        )
+    except OrganizationConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not changed:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    return {"ok": True}
+
+
+@app.post("/api/vulnerabilities/{finding_id}/risk-acceptance")
+@app.post("/api/endpoints/vulnerabilities/{finding_id}/risk-acceptance")
+def accept_finding_risk(request: Request, finding_id: int, body: RiskAcceptanceRequest):
+    return _write_risk_acceptance(request, finding_id, body)
+
+
+@app.delete("/api/vulnerabilities/{finding_id}/risk-acceptance")
+@app.delete("/api/endpoints/vulnerabilities/{finding_id}/risk-acceptance")
+def revoke_finding_risk(request: Request, finding_id: int):
+    return _write_risk_acceptance(request, finding_id)
 
 
 @app.post("/api/scoring/recalculate")
@@ -2525,6 +2571,7 @@ def scoring_overview(
     vuln_host: str | None = None,
     vuln_limit: int = 25,
     vuln_offset: int = 0,
+    include_accepted: bool = False,
 ):
     """Get priority, asset and exploitability scoring summaries."""
     org_db = _get_org_db(request)
@@ -2537,6 +2584,7 @@ def scoring_overview(
         vuln_host=vuln_host,
         vuln_limit=vuln_limit,
         vuln_offset=vuln_offset,
+        include_accepted=include_accepted,
     )
 
 
@@ -2724,13 +2772,15 @@ def export_vulnerabilities_csv(
     severity: str | None = None,
     host: str | None = None,
     tool: str | None = None,
+    include_accepted: bool = False,
 ):
     org_db = _get_org_db(request)
-    rows = get_vulnerability_export_rows(org_db, severity=severity, host=host, tool=tool)
+    rows = get_vulnerability_export_rows(org_db, severity=severity, host=host, tool=tool, include_accepted=include_accepted)
     output = io.StringIO()
     fieldnames = [
         "id", "severity", "priority_score", "cve", "title", "host", "tool",
         "cvss", "epss", "kev", "has_poc", "has_public_exploit", "solution",
+        "risk_accepted", "risk_reason", "risk_accepted_by", "risk_accepted_at", "risk_expires_at",
     ]
     writer = csv.DictWriter(output, fieldnames=fieldnames)
     writer.writeheader()
@@ -2814,11 +2864,11 @@ def _xlsx_workbook(headers: list[str], rows: list[list], widths: list[int], shee
     return output.getvalue()
 
 
-def _attack_surface_export_rows(org_db: str, search: str | None = None) -> list[dict]:
+def _attack_surface_export_rows(org_db: str, search: str | None = None, include_accepted: bool = False) -> list[dict]:
     rows: list[dict] = []
     offset = 0
     while True:
-        result = get_attack_surface_overview(org_db, search=search, limit=500, offset=offset)
+        result = get_attack_surface_overview(org_db, search=search, limit=500, offset=offset, include_accepted=include_accepted)
         items = result.get("items") or []
         rows.extend(items)
         offset += len(items)
@@ -2850,13 +2900,14 @@ def export_vulnerabilities_xlsx(
     severity: str | None = None,
     host: str | None = None,
     tool: str | None = None,
+    include_accepted: bool = False,
 ):
     """Export vulnerabilities as a styled XLSX workbook without extra runtime deps."""
     org_db = _get_org_db(request)
-    rows = get_vulnerability_export_rows(org_db, severity=severity, host=host, tool=tool)
+    rows = get_vulnerability_export_rows(org_db, severity=severity, host=host, tool=tool, include_accepted=include_accepted)
     headers = [
         "ID", "Severity", "Priority", "Title", "Host", "Tool", "CVE",
-        "Exploit", "Summary", "Solution",
+        "Exploit", "Summary", "Solution", "Risk accepted", "Acceptance reason", "Accepted by", "Accepted at (UTC)", "Expires at (UTC)",
     ]
     severity_styles = {
         "critical": 2,
@@ -2884,6 +2935,11 @@ def export_vulnerabilities_xlsx(
             "Yes" if row.get("has_public_exploit") or row.get("has_poc") else "No",
             row.get("summary") or "",
             row.get("solution") or "",
+            "Yes" if row.get("risk_accepted") else "No",
+            row.get("risk_reason") or "",
+            row.get("risk_accepted_by") or "",
+            row.get("risk_accepted_at") or "",
+            row.get("risk_expires_at") or "",
         ]
         cells = []
         for col_index, value in enumerate(values, start=1):
@@ -2892,13 +2948,13 @@ def export_vulnerabilities_xlsx(
 
     widths = "".join(
         f'<col min="{idx}" max="{idx}" width="{width}" customWidth="1"/>'
-        for idx, width in enumerate([8, 14, 10, 44, 28, 22, 18, 10, 60, 60], start=1)
+        for idx, width in enumerate([8, 14, 10, 44, 28, 22, 18, 10, 60, 60, 16, 60, 28, 24, 24], start=1)
     )
     sheet_xml = f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <cols>{widths}</cols>
   <sheetData>{"".join(sheet_rows)}</sheetData>
-  <autoFilter ref="A1:J{max(1, len(rows) + 1)}"/>
+  <autoFilter ref="A1:O{max(1, len(rows) + 1)}"/>
 </worksheet>'''
     styles_xml = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
@@ -2928,9 +2984,9 @@ def export_vulnerabilities_xlsx(
 
 
 @app.get("/api/exports/attack-surface.csv")
-def export_attack_surface_csv(request: Request, search: str | None = None):
+def export_attack_surface_csv(request: Request, search: str | None = None, include_accepted: bool = False):
     org_db = _get_org_db(request)
-    rows = [_asm_row_values(asset) for asset in _attack_surface_export_rows(org_db, search=search)]
+    rows = [_asm_row_values(asset) for asset in _attack_surface_export_rows(org_db, search=search, include_accepted=include_accepted)]
     output = io.StringIO()
     fieldnames = [
         "asset", "ips", "urls", "ports", "issues", "max_severity",
@@ -2948,9 +3004,9 @@ def export_attack_surface_csv(request: Request, search: str | None = None):
 
 
 @app.get("/api/exports/attack-surface.xlsx")
-def export_attack_surface_xlsx(request: Request, search: str | None = None):
+def export_attack_surface_xlsx(request: Request, search: str | None = None, include_accepted: bool = False):
     org_db = _get_org_db(request)
-    rows = [_asm_row_values(asset) for asset in _attack_surface_export_rows(org_db, search=search)]
+    rows = [_asm_row_values(asset) for asset in _attack_surface_export_rows(org_db, search=search, include_accepted=include_accepted)]
     headers = [
         "Asset", "IPs", "URLs", "Open Ports / Services", "Issues",
         "Max Severity", "Max Priority", "Exploitable", "Sources", "Tags", "Last Seen",
@@ -2978,11 +3034,11 @@ def export_attack_surface_xlsx(request: Request, search: str | None = None):
 
 
 @app.get("/api/exports/attack-surface.html", response_class=HTMLResponse)
-def export_attack_surface_html(request: Request, search: str | None = None, download: bool = False):
+def export_attack_surface_html(request: Request, search: str | None = None, download: bool = False, include_accepted: bool = False):
     org_db = _get_org_db(request)
-    rows = [_asm_row_values(asset) for asset in _attack_surface_export_rows(org_db, search=search)]
+    rows = [_asm_row_values(asset) for asset in _attack_surface_export_rows(org_db, search=search, include_accepted=include_accepted)]
     generated_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-    download_params = {"download": "true"}
+    download_params = {"download": "true", "include_accepted": "true" if include_accepted else "false"}
     if search:
         download_params["search"] = search
     download_href = f"/api/exports/attack-surface.html?{urlencode(download_params)}"
@@ -3070,7 +3126,7 @@ def export_attack_surface_html(request: Request, search: str | None = None, down
         <header>
             <div class="eyebrow">Darkstar attack surface report</div>
             <h1>ASM Exposure</h1>
-            <p class="subhead">Generated {h(generated_at)} for {h(request.session.get('organization') or org_db)}. {h('Search: ' + search if search else 'No export filters applied')}.</p>
+            <p class="subhead">Generated {h(generated_at)} for {h(request.session.get('organization') or org_db)}. {h('Search: ' + search if search else 'No export filters applied')}. Accepted risks {'included' if include_accepted else 'excluded'}.</p>
             <div class="report-actions">
                 <a href="{h(download_href)}">Download HTML</a>
                 <button type="button" onclick="window.print()">Print / Save PDF</button>
@@ -3111,13 +3167,14 @@ def export_vulnerabilities_html(
     host: str | None = None,
     tool: str | None = None,
     download: bool = False,
+    include_accepted: bool = False,
 ):
     """Render a designed standalone HTML vulnerability report."""
     org_db = _get_org_db(request)
     def h(value) -> str:
         return html_escape("" if value is None else str(value))
 
-    rows = get_vulnerability_export_rows(org_db, severity=severity, host=host, tool=tool, limit=5000)
+    rows = get_vulnerability_export_rows(org_db, severity=severity, host=host, tool=tool, limit=5000, include_accepted=include_accepted)
     generated_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     severity_order = ["critical", "high", "medium", "low", "baseline", "info", "unknown"]
     severity_counts = {key: 0 for key in severity_order}
@@ -3141,6 +3198,7 @@ def export_vulnerabilities_html(
         f"Severity: {severity}" if severity else "",
         f"Host: {host}" if host else "",
         f"Tool: {tool}" if tool else "",
+        "Accepted risks included" if include_accepted else "Accepted risks excluded",
     ] if part]
     download_params = {
         key: value
@@ -3149,6 +3207,7 @@ def export_vulnerabilities_html(
             "host": host,
             "tool": tool,
             "download": "true",
+            "include_accepted": "true" if include_accepted else None,
         }.items()
         if value
     }
@@ -3192,6 +3251,7 @@ def export_vulnerabilities_html(
             <td>
                 <strong>{h(row.get('title') or row.get('cve') or 'Untitled finding')}</strong>
                 <small>{h(row.get('summary') or '')}</small>
+                <small>{h('Risk accepted: ' + str(row.get('risk_reason') or '') + ' — ' + str(row.get('risk_accepted_by') or '') if row.get('risk_accepted') else '')}</small>
             </td>
             <td>{h(row.get('host') or '-')}</td>
             <td>{h(row.get('tool') or '-')}</td>
@@ -3381,11 +3441,11 @@ def _build_simple_pdf(title: str, lines: list[str]) -> bytes:
 
 
 @app.get("/api/exports/vulnerabilities.pdf")
-def export_vulnerabilities_pdf(request: Request):
+def export_vulnerabilities_pdf(request: Request, include_accepted: bool = False):
     org_db = _get_org_db(request)
-    rows = get_vulnerability_export_rows(org_db, limit=200)
+    rows = get_vulnerability_export_rows(org_db, limit=200, include_accepted=include_accepted)
     lines = [
-        f"{row.get('severity') or '-'} | score {row.get('priority_score') or 0} | {row.get('host') or '-'} | {row.get('cve') or '-'} | {row.get('title') or '-'}"
+        f"{'Risk accepted | ' if row.get('risk_accepted') else ''}{row.get('severity') or '-'} | score {row.get('priority_score') or 0} | {row.get('host') or '-'} | {row.get('cve') or '-'} | {row.get('title') or '-'}"
         for row in rows
     ]
     pdf = _build_simple_pdf("Darkstar Vulnerability Report", lines or ["No vulnerabilities found."])

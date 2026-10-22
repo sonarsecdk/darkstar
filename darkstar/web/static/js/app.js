@@ -13,6 +13,7 @@ const state = {
     organizationCreationPending: false,
     organizationDeletionPending: false,
     currentTab: "dashboard",
+    includeAcceptedRisks: false,
     vulnFilters: {
         severity: "",
         host: "",
@@ -276,9 +277,9 @@ function updateAttackSurfaceExportLinks() {
     const csv = document.getElementById("asmCsvExportBtn");
     const xlsx = document.getElementById("asmXlsxExportBtn");
     const html = document.getElementById("asmHtmlExportBtn");
-    if (csv) csv.href = `/api/exports/attack-surface.csv${suffix}`;
-    if (xlsx) xlsx.href = `/api/exports/attack-surface.xlsx${suffix}`;
-    if (html) html.href = `/api/exports/attack-surface.html${suffix}`;
+    if (csv) csv.href = riskFilterUrl(`/api/exports/attack-surface.csv${suffix}`);
+    if (xlsx) xlsx.href = riskFilterUrl(`/api/exports/attack-surface.xlsx${suffix}`);
+    if (html) html.href = riskFilterUrl(`/api/exports/attack-surface.html${suffix}`);
 }
 
 function compactList(items, max = 3) {
@@ -908,16 +909,52 @@ function drawAttackSurfaceCanvas(summary = {}) {
     }
 }
 
+function riskFilterUrl(url) {
+    return state.includeAcceptedRisks ? `${url}${url.includes("?") ? "&" : "?"}include_accepted=true` : url;
+}
+
+function riskBadge(item) {
+    return item.risk_accepted ? ' <span class="dedupe-count">Risk accepted</span>' : "";
+}
+
+function riskAcceptanceSection(vuln, kind) {
+    const active = Boolean(vuln.risk_accepted);
+    const canWrite = roleRank(state.role) >= roleRank("security_analyst");
+    const history = vuln.risk_accepted_at ? `
+        ${detailField("Accepted by", vuln.risk_accepted_by)}
+        ${detailField("Accepted at (UTC)", vuln.risk_accepted_at)}
+        ${detailField("Expires at (UTC)", vuln.risk_expires_at || "No expiry")}
+        ${detailSection("Reason", vuln.risk_reason)}
+    ` : "";
+    return `<section class="detail-section">
+        <h4>${active ? "Risk accepted" : "Risk not accepted"}</h4>
+        ${history}
+        ${canWrite ? `<form id="riskAcceptanceForm" data-kind="${kind}" data-finding-id="${escapeHtml(vuln.id)}" data-org-db="${escapeHtml(state.orgDb)}" data-revoke="${active}">
+            ${active ? "" : `
+                <p>Applies to this finding on this asset, including future rescans.</p>
+                <div class="form-group"><label for="riskReasonInput">Reason</label>
+                    <textarea id="riskReasonInput" required maxlength="4000" rows="3"></textarea></div>
+                <div class="form-group"><label for="riskExpiryInput">Expiry (optional, your local time)</label>
+                    <input id="riskExpiryInput" type="datetime-local" /></div>
+            `}
+            <button class="btn-secondary" type="submit">${active ? "Revoke acceptance" : "Accept risk"}</button>
+            <p id="riskAcceptanceMessage" class="form-message" role="status"></p>
+        </form>` : ""}
+    </section>`;
+}
+
 function updateVulnerabilityReportLink() {
     const link = document.getElementById("htmlReportExportBtn");
     const xlsxLink = document.getElementById("xlsxExportBtn");
+    const csvLink = document.getElementById("csvExportBtn");
     const params = new URLSearchParams();
     if (state.vulnFilters.severity) params.set("severity", state.vulnFilters.severity);
     if (state.vulnFilters.host) params.set("host", state.vulnFilters.host);
     if (state.vulnFilters.tool) params.set("tool", state.vulnFilters.tool);
     const suffix = params.toString() ? `?${params}` : "";
-    if (link) link.href = `/api/exports/vulnerabilities.html${suffix}`;
-    if (xlsxLink) xlsxLink.href = `/api/exports/vulnerabilities.xlsx${suffix}`;
+    if (link) link.href = riskFilterUrl(`/api/exports/vulnerabilities.html${suffix}`);
+    if (csvLink) csvLink.href = riskFilterUrl(`/api/exports/vulnerabilities.csv${suffix}`);
+    if (xlsxLink) xlsxLink.href = riskFilterUrl(`/api/exports/vulnerabilities.xlsx${suffix}`);
 }
 
 function detailField(label, value, options = {}) {
@@ -1022,6 +1059,7 @@ async function openVulnerabilityDetail(vulnerabilityId) {
                 ${detailField("KEV", vuln.kev ? "Yes" : "No")}
                 ${detailField("Exploit Maturity", vuln.exploit_maturity || "-")}
             </div>
+            ${riskAcceptanceSection(vuln, "network")}
             ${detailSection("Summary", vuln.summary)}
             ${detailSection("Impact", vuln.impact)}
             ${detailSection("Recommended Fix", vuln.solution)}
@@ -1094,7 +1132,7 @@ async function openEndpointAgentDetail(agentId) {
         const [agent, software, vulns] = await Promise.all([
             requestJson(`/api/endpoints/agents/${encodeURIComponent(agentId)}`),
             requestJson(`/api/endpoints/software?agent_id=${encodeURIComponent(agentId)}&limit=12`),
-            requestJson(`/api/endpoints/vulnerabilities?agent_id=${encodeURIComponent(agentId)}&limit=12`),
+            requestJson(riskFilterUrl(`/api/endpoints/vulnerabilities?agent_id=${encodeURIComponent(agentId)}&limit=12`)),
         ]);
         const softwareRows = (software.items || []).map(item => `
             <tr>
@@ -1166,6 +1204,7 @@ async function openEndpointVulnerabilityDetail(findingId) {
                 ${detailField("Fixed Version", vuln.fixed_version || "-")}
                 ${detailField("PURL", vuln.purl || vuln.software_purl || "-")}
             </div>
+            ${riskAcceptanceSection(vuln, "endpoint")}
             ${detailSection("Summary", vuln.summary)}
             ${detailPre("Matcher Evidence", Object.keys(evidence || {}).length ? JSON.stringify(evidence, null, 2) : "")}
         `);
@@ -1253,6 +1292,8 @@ function setAuthUI() {
     if (dashboardPanel) dashboardPanel.classList.toggle("hidden", !state.authenticated);
     if (logoutBtn) logoutBtn.classList.toggle("hidden", !state.authenticated);
     if (!state.authenticated) {
+        state.includeAcceptedRisks = false;
+        document.querySelectorAll(".include-accepted-risks").forEach(input => { input.checked = false; });
         state.themeVersion += 1;
         state.themeSaving = false;
         updateAppearance(null);
@@ -1479,7 +1520,7 @@ async function refreshDashboard() {
     try {
         const [me, stats, scans] = await Promise.all([
             requestJson("/api/me"),
-            requestJson("/api/stats"),
+            requestJson(riskFilterUrl("/api/stats")),
             requestJson("/api/scans?limit=50"),
         ]);
 
@@ -1556,7 +1597,7 @@ async function loadFilteredVulnerabilities() {
         updateVulnerabilityReportLink();
         renderVulnerabilityCharts();
         if (state.vulnFilters.groupBy === "asset" || state.vulnFilters.groupBy === "vulnerability") {
-            const grouped = await requestJson(`/api/vulnerabilities/grouped?group_by=${state.vulnFilters.groupBy}`);
+            const grouped = await requestJson(riskFilterUrl(`/api/vulnerabilities/grouped?group_by=${state.vulnFilters.groupBy}`));
             renderServerGroupedVulnerabilities(grouped.items || []);
             document.getElementById("pageInfo").textContent = `${grouped.items.length} groups`;
             document.getElementById("resultCount").textContent = `${grouped.items.length} groups`;
@@ -1575,7 +1616,7 @@ async function loadFilteredVulnerabilities() {
         if (state.vulnFilters.host) params.append("host", state.vulnFilters.host);
         if (state.vulnFilters.tool) params.append("tool", state.vulnFilters.tool);
 
-        const result = await requestJson(`/api/vulnerabilities/filtered?${params}`);
+        const result = await requestJson(riskFilterUrl(`/api/vulnerabilities/filtered?${params}`));
         state.vulnTotal = result.total;
 
         let items = result.items || [];
@@ -1641,7 +1682,7 @@ function renderFilteredVulnerabilities(items) {
                     <tr class="vuln-row-${escapeHtml(sev)} clickable-row vulnerability-detail-row" data-vulnerability-id="${escapeHtml(item.id)}">
                         <td>${item.id}</td>
                         <td>${scoreButton(item.priority_score, item.id)}</td>
-                        <td>${severityBadge(item.severity)}</td>
+                        <td>${severityBadge(item.severity)}${riskBadge(item)}</td>
                         <td><button type="button" class="link-button detail-link vulnerability-detail-link" data-vulnerability-id="${escapeHtml(item.id)}">${escapeHtml(item.title || "-")}</button></td>
                         <td>${hostLink(item.host)}</td>
                         <td>${escapeHtml(item.tool || "-")}</td>
@@ -1674,7 +1715,7 @@ function renderFilteredVulnerabilities(items) {
                 <tr class="vuln-row-${escapeHtml(sev)} clickable-row vulnerability-detail-row" data-vulnerability-id="${escapeHtml(item.id)}">
                     <td>${item.id}</td>
                     <td>${scoreButton(item.priority_score, item.id)}</td>
-                    <td>${severityBadge(item.severity)}</td>
+                    <td>${severityBadge(item.severity)}${riskBadge(item)}</td>
                     <td><button type="button" class="link-button detail-link vulnerability-detail-link" data-vulnerability-id="${escapeHtml(item.id)}">${escapeHtml(item.title || "-")}</button>${duplicateText}</td>
                     <td>${hostLink(item.host)}</td>
                     <td>${escapeHtml(item.tool || "-")}</td>
@@ -1706,7 +1747,7 @@ function updatePaginationInfo() {
 
 async function loadTargetsView() {
     try {
-        const vulns = await requestJson("/api/vulnerabilities?limit=1000");
+        const vulns = await requestJson(riskFilterUrl("/api/vulnerabilities?limit=1000"));
         const hostMap = {};
 
         // Build host statistics
@@ -1775,7 +1816,7 @@ async function loadHostView() {
             offset: 0,
             dedupe: "true",
         });
-        const result = await requestJson(`/api/vulnerabilities/filtered?${params}`);
+        const result = await requestJson(riskFilterUrl(`/api/vulnerabilities/filtered?${params}`));
         const items = result.items || [];
         const severities = {};
         items.forEach(item => {
@@ -1798,7 +1839,7 @@ async function loadHostView() {
             return `
                 <tr class="vuln-row-${escapeHtml(sev)} clickable-row vulnerability-detail-row" data-vulnerability-id="${escapeHtml(item.id)}">
                     <td>${scoreButton(item.priority_score, item.id)}</td>
-                    <td>${severityBadge(item.severity)}</td>
+                    <td>${severityBadge(item.severity)}${riskBadge(item)}</td>
                     <td><button type="button" class="link-button detail-link vulnerability-detail-link" data-vulnerability-id="${escapeHtml(item.id)}">${escapeHtml(item.title || "-")}</button></td>
                     <td>${escapeHtml(item.tool || "-")}</td>
                     <td>${escapeHtml(item.cve || "-")}</td>
@@ -1824,7 +1865,7 @@ async function loadAttackSurfaceView() {
             offset: state.asmFilters.page * state.asmFilters.limit,
         });
         if (state.asmFilters.search) params.set("search", state.asmFilters.search);
-        const result = await requestJson(`/api/attack-surface?${params}`);
+        const result = await requestJson(riskFilterUrl(`/api/attack-surface?${params}`));
         const summary = result.summary || {};
         const items = result.items || [];
         state.asmFilters.total = result.total || 0;
@@ -1961,7 +2002,7 @@ async function loadScoringView() {
         if (state.scoringFilters.vulnSeverity) params.set("vuln_severity", state.scoringFilters.vulnSeverity);
         if (state.scoringFilters.vulnHost) params.set("vuln_host", state.scoringFilters.vulnHost);
 
-        const result = await requestJson(`/api/scoring/overview?${params}`);
+        const result = await requestJson(riskFilterUrl(`/api/scoring/overview?${params}`));
         const summary = result.summary || {};
         document.getElementById("avgPriority").textContent = summary.average_priority ?? 0;
         document.getElementById("maxPriority").textContent = summary.max_priority ?? 0;
@@ -2027,11 +2068,11 @@ async function loadEndpointsView() {
         if (filters.vulnSeverity) vulnParams.set("severity", filters.vulnSeverity);
 
         const [overview, agents, software, vulns, networkMap, tokens] = await Promise.all([
-            requestJson("/api/endpoints/overview"),
-            requestJson(`/api/endpoints/agents?${agentParams}`),
+            requestJson(riskFilterUrl("/api/endpoints/overview")),
+            requestJson(riskFilterUrl(`/api/endpoints/agents?${agentParams}`)),
             requestJson(`/api/endpoints/software?${softwareParams}`),
-            requestJson(`/api/endpoints/vulnerabilities?${vulnParams}`),
-            requestJson("/api/endpoints/network-map"),
+            requestJson(riskFilterUrl(`/api/endpoints/vulnerabilities?${vulnParams}`)),
+            requestJson(riskFilterUrl("/api/endpoints/network-map")),
             roleRank(state.role) >= roleRank("tenant_admin") ? requestJson("/api/endpoints/enrollment-tokens") : Promise.resolve({ items: [] }),
         ]);
 
@@ -3768,6 +3809,52 @@ document.getElementById("scoringVulnNextBtn").addEventListener("click", () => {
     }
 });
 
+// Risk filters apply consistently to findings, dashboard totals and reports.
+document.querySelectorAll(".include-accepted-risks").forEach(input => {
+    input.addEventListener("change", async () => {
+        state.includeAcceptedRisks = input.checked;
+        document.querySelectorAll(".include-accepted-risks").forEach(other => { other.checked = input.checked; });
+        state.vulnFilters.page = 0;
+        state.endpointFilters.vulnPage = 0;
+        state.scoringFilters.vulnPage = 0;
+        state.scoringFilters.assetPage = 0;
+        await refreshDashboard();
+        await switchTab(state.currentTab);
+    });
+});
+
+document.addEventListener("submit", async event => {
+    const form = event.target;
+    if (form.id !== "riskAcceptanceForm") return;
+    event.preventDefault();
+    if (form.dataset.orgDb !== state.orgDb) return;
+    const button = form.querySelector("button");
+    if (button.disabled) return;
+    button.disabled = true;
+    const message = form.querySelector(".form-message");
+    const revoke = form.dataset.revoke === "true";
+    const prefix = form.dataset.kind === "endpoint" ? "/api/endpoints/vulnerabilities" : "/api/vulnerabilities";
+    try {
+        const expiry = form.querySelector("#riskExpiryInput")?.value;
+        await requestJson(`${prefix}/${encodeURIComponent(form.dataset.findingId)}/risk-acceptance`, {
+            method: revoke ? "DELETE" : "POST",
+            ...(revoke ? {} : { body: JSON.stringify({
+                reason: form.querySelector("#riskReasonInput").value.trim(),
+                expires_at: expiry ? new Date(expiry).toISOString() : null,
+            }) }),
+        });
+        if (form.dataset.orgDb !== state.orgDb) return;
+        await refreshDashboard();
+        await switchTab(state.currentTab);
+        if (form.dataset.kind === "endpoint") await openEndpointVulnerabilityDetail(form.dataset.findingId);
+        else await openVulnerabilityDetail(form.dataset.findingId);
+    } catch (error) {
+        message.textContent = error.message;
+    } finally {
+        button.disabled = false;
+    }
+});
+
 // Filter controls
 document.getElementById("filterSeverity").addEventListener("change", (e) => {
     state.vulnFilters.severity = e.target.value;
@@ -3801,6 +3888,9 @@ document.getElementById("clearFiltersBtn").addEventListener("click", () => {
         limit: 50,
         groupBy: "none",
     };
+    state.includeAcceptedRisks = false;
+    document.querySelectorAll(".include-accepted-risks").forEach(input => { input.checked = false; });
+    refreshDashboard();
     document.getElementById("filterSeverity").value = "";
     document.getElementById("filterHost").value = "";
     document.getElementById("filterTool").value = "";

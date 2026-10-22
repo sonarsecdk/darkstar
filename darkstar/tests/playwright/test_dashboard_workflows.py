@@ -493,3 +493,61 @@ def test_settings_notifications_can_be_configured(darkstar_server):
             page.screenshot(path=str(output_dir / "settings-notifications-workflow.png"), full_page=True)
         finally:
             browser.close()
+
+
+def test_risk_acceptance_filter_and_revocation(darkstar_server):
+    sync_api = pytest.importorskip("playwright.sync_api")
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page(viewport={"width": 1440, "height": 1100})
+            original = _install_dashboard_mocks(page, darkstar_server)
+            finding = dict(VULNERABILITIES[0], risk_accepted=False)
+            writes = []
+
+            def risk_routes(route):
+                path = urlparse(route.request.url).path
+                include = parse_qs(urlparse(route.request.url).query).get("include_accepted") == ["true"]
+                visible = include or not finding["risk_accepted"]
+                if path == "/api/vulnerabilities/1/risk-acceptance":
+                    writes.append((route.request.method, route.request.post_data_json))
+                    accepted = route.request.method == "POST"
+                    finding.update(risk_accepted=accepted)
+                    if accepted:
+                        finding.update(risk_reason=route.request.post_data_json["reason"], risk_accepted_by="analyst@example.test", risk_accepted_at="2026-10-22T12:00:00")
+                    _json(route, {"ok": True})
+                elif path == "/api/vulnerabilities/1":
+                    _json(route, finding)
+                elif path == "/api/vulnerabilities/filtered":
+                    _json(route, {"items": [finding] if visible else [], "total": int(visible)})
+                elif path == "/api/stats":
+                    _json(route, {"total_vulnerabilities": int(visible), "severity_breakdown": {"critical": int(visible)}})
+                else:
+                    route.fallback()
+
+            page.route(f"{darkstar_server}/api/**", risk_routes)
+            page.goto(darkstar_server, wait_until="networkidle")
+            expect(page.locator("#statTotal")).to_have_text("1")
+            page.locator('[data-tab="vulns"]').click()
+            page.locator(".vulnerability-detail-link").first.click()
+            page.locator("#riskReasonInput").fill("Temporary mitigation <script>never execute</script>")
+            page.get_by_role("button", name="Accept risk", exact=True).click()
+            expect(page.get_by_role("button", name="Revoke acceptance")).to_be_visible()
+            expect(page.locator("#detailBody")).to_contain_text("<script>never execute</script>")
+            expect(page.locator("#detailBody script")).to_have_count(0)
+            expect(page.locator("#statTotal")).to_have_text("0")
+            page.locator("#detailCloseBtn").click()
+            expect(page.locator("#vulnRows")).to_contain_text("No vulnerabilities")
+            page.locator("#vulns-tab .include-accepted-risks").check()
+            expect(page.locator("#vulnRows")).to_contain_text("Risk accepted")
+            expect(page.locator("#statTotal")).to_have_text("1")
+            expect(page.locator("#htmlReportExportBtn")).to_have_attribute("href", "/api/exports/vulnerabilities.html?include_accepted=true")
+            page.locator(".vulnerability-detail-link").first.click()
+            page.get_by_role("button", name="Revoke acceptance").click()
+            expect(page.get_by_role("button", name="Accept risk", exact=True)).to_be_visible()
+            assert [method for method, _ in writes] == ["POST", "DELETE"]
+            assert writes[0][1]["expires_at"] is None
+            assert original["unexpected"] == []
+        finally:
+            browser.close()

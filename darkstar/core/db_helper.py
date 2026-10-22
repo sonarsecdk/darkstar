@@ -29,6 +29,18 @@ VALID_ROLES = {"platform_admin", "tenant_admin", "security_analyst", "viewer"}
 
 ORG_SCHEMA_STATEMENTS = [
     """
+    CREATE TABLE IF NOT EXISTS risk_acceptances (
+        finding_key CHAR(64) NOT NULL PRIMARY KEY,
+        finding_kind VARCHAR(16) NOT NULL,
+        reason TEXT NOT NULL,
+        accepted_by VARCHAR(255) NOT NULL,
+        accepted_at DATETIME NOT NULL,
+        expires_at DATETIME DEFAULT NULL,
+        revoked_by VARCHAR(255) DEFAULT NULL,
+        revoked_at DATETIME DEFAULT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS vulnerability (
         id INT(11) NOT NULL AUTO_INCREMENT,
         cve VARCHAR(255),
@@ -1512,19 +1524,110 @@ def get_scan_record(org_name: str, scan_id: int) -> dict | None:
         return row
 
 
-def get_latest_vulnerabilities(org_name: str, limit: int = 200) -> list[dict]:
+RISK_FIELDS = ["risk_accepted", "risk_reason", "risk_accepted_by", "risk_accepted_at", "risk_expires_at"]
+
+
+def _risk_finding_key(kind: str) -> str:
+    # Include the component/path verbatim: /Admin and /admin may be different findings.
+    if kind == "network":
+        fields = "LOWER(TRIM(f.host)), LOWER(TRIM(f.tool)), f.cve, f.title, f.affected_item"
+    elif kind == "endpoint":
+        fields = "f.agent_id, f.software_key, f.cve, f.source"
+    else:
+        raise ValueError("Unknown finding kind")
+    return f"SHA2(JSON_ARRAY('{kind}', {fields}), 256)"
+
+
+def _risk_findings_source(kind: str, include_accepted: bool = False) -> str:
+    """Join tenant-local acceptance before filtering, counting or paginating findings."""
+    key = _risk_finding_key(kind)
+    table = "vulnerability" if kind == "network" else "endpoint_vulnerabilities"
+    active = "a.finding_key IS NOT NULL AND a.revoked_at IS NULL AND (a.expires_at IS NULL OR a.expires_at > UTC_TIMESTAMP())"
+    where = "" if include_accepted else f"WHERE NOT ({active})"
+    return f"""(
+        SELECT f.*, {key} AS risk_finding_key,
+               ({active}) AS risk_accepted,
+               a.reason AS risk_reason, a.accepted_by AS risk_accepted_by,
+               a.accepted_at AS risk_accepted_at, a.expires_at AS risk_expires_at
+        FROM {table} f
+        LEFT JOIN risk_acceptances a ON a.finding_key = {key}
+        {where}
+    )"""
+
+
+def set_risk_acceptance(
+    org_name: str, kind: str, finding_id: int, *, actor: str,
+    reason: str | None = None, expires_at: datetime | None = None,
+    revoke: bool = False, expected_org_id: int | None = None,
+) -> bool:
+    """Accept/revoke a finding identity and write its audit event atomically."""
+    key = _risk_finding_key(kind)
+    table = "vulnerability" if kind == "network" else "endpoint_vulnerabilities"
+    if not revoke:
+        reason = (reason or "").strip()
+        if not reason or len(reason) > 4000:
+            raise ValueError("A reason between 1 and 4000 characters is required")
+        if expires_at is not None:
+            if expires_at.tzinfo is None:
+                raise ValueError("Expiry must include a timezone")
+            expires_at = expires_at.astimezone(timezone.utc).replace(tzinfo=None)
+            if expires_at <= datetime.utcnow():
+                raise ValueError("Expiry must be in the future")
+    with DatabaseConnectionManager() as connection:
+        cursor = connection.cursor(dictionary=True)
+        organization = _lock_organization(cursor, normalize_org_name(org_name))
+        if not organization or (expected_org_id is not None and organization["id"] != expected_org_id):
+            raise OrganizationConflictError("Organization is no longer available")
+        _use_org_database(cursor, org_name)
+        asset = "f.host" if kind == "network" else "f.agent_id"
+        cursor.execute(f"SELECT {key} AS finding_key, {asset} AS asset FROM {table} f WHERE f.id = %s", (finding_id,))
+        finding = cursor.fetchone()
+        if not finding:
+            cursor.close()
+            return False
+        if not str(finding.get("asset") or "").strip():
+            raise ValueError("A finding must identify its asset before its risk can be accepted")
+        now = datetime.utcnow()
+        if revoke:
+            cursor.execute(
+                "UPDATE risk_acceptances SET revoked_by = %s, revoked_at = %s WHERE finding_key = %s",
+                (actor, now, finding["finding_key"]),
+            )
+        else:
+            cursor.execute(
+                """INSERT INTO risk_acceptances
+                   (finding_key, finding_kind, reason, accepted_by, accepted_at, expires_at)
+                   VALUES (%s, %s, %s, %s, %s, %s)
+                   ON DUPLICATE KEY UPDATE reason = VALUES(reason), accepted_by = VALUES(accepted_by),
+                       accepted_at = VALUES(accepted_at), expires_at = VALUES(expires_at),
+                       revoked_by = NULL, revoked_at = NULL""",
+                (finding["finding_key"], kind, reason, actor, now, expires_at),
+            )
+        cursor.execute(
+            """INSERT INTO audit_log (actor, action, entity_type, entity_id, metadata, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (actor, "risk.revoked" if revoke else "risk.accepted", kind + "_finding", str(finding_id),
+             json.dumps({"finding_key": finding["finding_key"], "reason": reason, "expires_at": expires_at}, default=str), now),
+        )
+        connection.commit()
+        cursor.close()
+    return True
+
+
+def get_latest_vulnerabilities(org_name: str, limit: int = 200, include_accepted: bool = False) -> list[dict]:
     """Return latest vulnerabilities from organization database."""
+    risk_source = _risk_findings_source("network", include_accepted)
     limit = max(1, min(limit, 1000))
     with DatabaseConnectionManager() as connection:
         cursor = connection.cursor(dictionary=True)
         _use_org_database(cursor, org_name)
         cursor.execute(
-            """
-            SELECT id, cve, title, affected_item, tool, confidence, severity, host,
+            f"""
+            SELECT risk_accepted, risk_reason, risk_accepted_by, risk_accepted_at, risk_expires_at, id, cve, title, affected_item, tool, confidence, severity, host,
                    cvss, epss, summary, cwe, capec, solution, impact, age, kev,
                    priority_score, risk_score, has_poc, has_public_exploit,
                    exploit_maturity, score_reason, asset_criticality, environment
-            FROM vulnerability
+            FROM {risk_source} vulnerability
             ORDER BY COALESCE(priority_score, 0) DESC, id DESC
             LIMIT %s
             """,
@@ -1680,8 +1783,10 @@ def get_scoring_overview(
     vuln_host: str | None = None,
     vuln_limit: int = 25,
     vuln_offset: int = 0,
+    include_accepted: bool = False,
 ) -> dict:
     """Return summary scoring views for dashboard widgets."""
+    risk_source = _risk_findings_source("network", include_accepted)
     recalculate_vulnerability_scores(org_name)
     asset_limit = max(1, min(asset_limit, 200))
     asset_offset = max(0, asset_offset)
@@ -1691,14 +1796,14 @@ def get_scoring_overview(
         cursor = connection.cursor(dictionary=True)
         _use_org_database(cursor, org_name)
         cursor.execute(
-            """
+            f"""
             SELECT
                 COUNT(*) AS total,
                 ROUND(AVG(COALESCE(priority_score, 0)), 2) AS average_priority,
                 MAX(COALESCE(priority_score, 0)) AS max_priority,
                 SUM(CASE WHEN kev THEN 1 ELSE 0 END) AS kev_count,
                 SUM(CASE WHEN has_public_exploit THEN 1 ELSE 0 END) AS exploitable_count
-            FROM vulnerability
+            FROM {risk_source} vulnerability
             """
         )
         summary = cursor.fetchone() or {}
@@ -1714,7 +1819,7 @@ def get_scoring_overview(
             SELECT COUNT(*) AS total
             FROM (
                 SELECT host
-                FROM vulnerability
+                FROM {risk_source} vulnerability
                 WHERE {asset_where}
                 GROUP BY host
             ) assets
@@ -1732,7 +1837,7 @@ def get_scoring_overview(
                    SUM(CASE WHEN LOWER(COALESCE(severity, 'unknown')) = 'critical' THEN 1 ELSE 0 END) AS critical_count,
                    SUM(CASE WHEN LOWER(COALESCE(severity, 'unknown')) = 'high' THEN 1 ELSE 0 END) AS high_count,
                    SUM(CASE WHEN has_public_exploit THEN 1 ELSE 0 END) AS exploitable_count
-            FROM vulnerability
+            FROM {risk_source} vulnerability
             WHERE {asset_where}
             GROUP BY host
             ORDER BY max_priority DESC, vulnerability_count DESC
@@ -1752,16 +1857,16 @@ def get_scoring_overview(
             vuln_params.append(f"%{vuln_host}%")
 
         cursor.execute(
-            f"SELECT COUNT(*) AS total FROM vulnerability WHERE {vuln_where}",
+            f"SELECT COUNT(*) AS total FROM {risk_source} vulnerability WHERE {vuln_where}",
             vuln_params,
         )
         vuln_total_row = cursor.fetchone() or {}
         vuln_total = vuln_total_row.get("total") or 0
         cursor.execute(
             f"""
-            SELECT id, cve, title, host, severity, cvss, epss, kev, has_poc,
+            SELECT risk_accepted, id, cve, title, host, severity, cvss, epss, kev, has_poc,
                    has_public_exploit, priority_score, score_reason
-            FROM vulnerability
+            FROM {risk_source} vulnerability
             WHERE {vuln_where}
             ORDER BY COALESCE(priority_score, 0) DESC, id DESC
             LIMIT %s OFFSET %s
@@ -1783,8 +1888,9 @@ def get_scoring_overview(
         }
 
 
-def get_vulnerability_stats(org_name: str) -> dict:
+def get_vulnerability_stats(org_name: str, include_accepted: bool = False) -> dict:
     """Return dashboard aggregate stats for vulnerabilities and scans."""
+    risk_source = _risk_findings_source("network", include_accepted)
     total_vulns = 0
     running_scans = 0
     total_scans = 0
@@ -1796,14 +1902,14 @@ def get_vulnerability_stats(org_name: str) -> dict:
             cursor = connection.cursor(dictionary=True)
             _use_org_database(cursor, org_name)
 
-            cursor.execute("SELECT COUNT(*) AS total FROM vulnerability")
+            cursor.execute(f"SELECT COUNT(*) AS total FROM {risk_source} vulnerability")
             row = cursor.fetchone()
             total_vulns = row["total"] if row else 0
 
             cursor.execute(
-                """
+                f"""
                 SELECT LOWER(COALESCE(severity, 'unknown')) AS severity, COUNT(*) AS count
-                FROM vulnerability
+                FROM {risk_source} vulnerability
                 GROUP BY LOWER(COALESCE(severity, 'unknown'))
                 """
             )
@@ -2634,12 +2740,14 @@ def get_vulnerabilities_filtered(
     limit: int = 200,
     offset: int = 0,
     dedupe: bool = False,
+    include_accepted: bool = False,
 ) -> tuple[list[dict], int]:
     """
     Retrieve vulnerabilities with optional filtering.
 
     Returns: (items, total_count)
     """
+    risk_source = _risk_findings_source("network", include_accepted)
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
 
@@ -2673,24 +2781,18 @@ def get_vulnerabilities_filtered(
                 "exploit_maturity", "score_reason", "asset_criticality",
                 "environment",
             ]
+            select_columns += RISK_FIELDS
             select_sql = ", ".join(select_columns)
             select_sql_prefixed = ", ".join(f"v.{column}" for column in select_columns)
 
             if dedupe:
-                dedupe_expr = """
-                    LOWER(CONCAT_WS('|',
-                        COALESCE(NULLIF(host, ''), 'unknown-host'),
-                        COALESCE(NULLIF(cve, ''), NULLIF(title, ''), 'unknown-vulnerability'),
-                        COALESCE(NULLIF(tool, ''), 'unknown-tool'),
-                        COALESCE(NULLIF(affected_item, ''), 'unknown-item')
-                    ))
-                """
+                dedupe_expr = "risk_finding_key"
                 cursor.execute(
                     f"""
                     SELECT COUNT(*) AS total
                     FROM (
                         SELECT 1
-                        FROM vulnerability
+                        FROM {risk_source} vulnerability
                         WHERE {where_clause}
                         GROUP BY {dedupe_expr}
                     ) grouped
@@ -2703,11 +2805,11 @@ def get_vulnerabilities_filtered(
                     f"""
                     SELECT {select_sql_prefixed},
                            grouped.duplicate_count
-                    FROM vulnerability v
+                    FROM {risk_source} v
                     JOIN (
                         SELECT MAX(id) AS representative_id,
                                COUNT(*) AS duplicate_count
-                        FROM vulnerability
+                        FROM {risk_source} vulnerability
                         WHERE {where_clause}
                         GROUP BY {dedupe_expr}
                     ) grouped ON grouped.representative_id = v.id
@@ -2717,13 +2819,13 @@ def get_vulnerabilities_filtered(
                     params + [limit, offset],
                 )
             else:
-                cursor.execute(f"SELECT COUNT(*) AS total FROM vulnerability WHERE {where_clause}", params)
+                cursor.execute(f"SELECT COUNT(*) AS total FROM {risk_source} vulnerability WHERE {where_clause}", params)
                 total_row = cursor.fetchone()
                 total = total_row["total"] if total_row else 0
                 cursor.execute(
                     f"""
                     SELECT {select_sql}, 1 AS duplicate_count
-                    FROM vulnerability
+                    FROM {risk_source} vulnerability
                     WHERE {where_clause}
                     ORDER BY COALESCE(priority_score, 0) DESC, id DESC
                     LIMIT %s OFFSET %s
@@ -2740,17 +2842,18 @@ def get_vulnerabilities_filtered(
 
 def get_vulnerability_detail(org_name: str, vulnerability_id: int) -> dict | None:
     """Return a detailed vulnerability record, including PoC/reference fields."""
+    risk_source = _risk_findings_source("network", True)
     with DatabaseConnectionManager() as connection:
         cursor = connection.cursor(dictionary=True)
         _use_org_database(cursor, org_name)
         cursor.execute(
-            """
-            SELECT id, cve, title, affected_item, tool, confidence, severity, host,
+            f"""
+            SELECT risk_accepted, risk_reason, risk_accepted_by, risk_accepted_at, risk_expires_at, id, cve, title, affected_item, tool, confidence, severity, host,
                    cvss, epss, summary, cwe, `references`, capec, solution, impact,
                    access, age, pocs, kev, priority_score, risk_score, has_poc,
                    has_public_exploit, exploit_maturity, score_reason,
                    asset_criticality, environment, scored_at
-            FROM vulnerability
+            FROM {risk_source} vulnerability
             WHERE id = %s
             """,
             (vulnerability_id,),
@@ -2766,33 +2869,37 @@ def get_vulnerability_export_rows(
     host: str | None = None,
     tool: str | None = None,
     limit: int = 5000,
+    include_accepted: bool = False,
 ) -> list[dict]:
-    """Return vulnerability rows suitable for CSV/PDF export."""
-    items, _ = get_vulnerabilities_filtered(
-        org_name=org_name,
-        severity=severity,
-        host=host,
-        tool=tool,
-        limit=min(limit, 5000),
-        offset=0,
-    )
-    return items
+    """Return bounded report rows using the same acceptance filter as the findings list."""
+    rows = []
+    limit = max(1, min(limit, 5000))
+    while len(rows) < limit:
+        items, total = get_vulnerabilities_filtered(
+            org_name, severity=severity, host=host, tool=tool,
+            limit=min(500, limit - len(rows)), offset=len(rows), include_accepted=include_accepted,
+        )
+        rows.extend(items)
+        if not items or len(rows) >= total:
+            break
+    return rows
 
 
-def get_grouped_vulnerabilities(org_name: str, group_by: str = "asset") -> list[dict]:
+def get_grouped_vulnerabilities(org_name: str, group_by: str = "asset", include_accepted: bool = False) -> list[dict]:
     """Return server-side grouping by asset or vulnerability definition."""
+    risk_source = _risk_findings_source("network", include_accepted)
     group_by = group_by if group_by in {"asset", "vulnerability"} else "asset"
     with DatabaseConnectionManager() as connection:
         cursor = connection.cursor(dictionary=True)
         _use_org_database(cursor, org_name)
         if group_by == "vulnerability":
             cursor.execute(
-                """
+                f"""
                 SELECT COALESCE(NULLIF(cve, ''), title, 'Unknown vulnerability') AS group_key,
                        COUNT(*) AS count,
                        MAX(COALESCE(priority_score, 0)) AS max_priority,
                        GROUP_CONCAT(DISTINCT host ORDER BY host SEPARATOR ', ') AS hosts
-                FROM vulnerability
+                FROM {risk_source} vulnerability
                 GROUP BY COALESCE(NULLIF(cve, ''), title, 'Unknown vulnerability')
                 ORDER BY max_priority DESC, count DESC
                 LIMIT 100
@@ -2800,12 +2907,12 @@ def get_grouped_vulnerabilities(org_name: str, group_by: str = "asset") -> list[
             )
         else:
             cursor.execute(
-                """
+                f"""
                 SELECT COALESCE(NULLIF(host, ''), 'Unknown asset') AS group_key,
                        COUNT(*) AS count,
                        MAX(COALESCE(priority_score, 0)) AS max_priority,
                        GROUP_CONCAT(DISTINCT COALESCE(NULLIF(cve, ''), title) ORDER BY priority_score DESC SEPARATOR ', ') AS vulnerabilities
-                FROM vulnerability
+                FROM {risk_source} vulnerability
                 GROUP BY COALESCE(NULLIF(host, ''), 'Unknown asset')
                 ORDER BY max_priority DESC, count DESC
                 LIMIT 100
@@ -2901,8 +3008,10 @@ def get_attack_surface_overview(
     search: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    include_accepted: bool = False,
 ) -> dict:
     """Return an ASM-oriented asset summary from findings, BBot events and scan logs."""
+    risk_source = _risk_findings_source("network", True)
     search_text = (search or "").strip().lower()
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
@@ -2914,10 +3023,10 @@ def get_attack_surface_overview(
             _use_org_database(cursor, org_name)
 
             cursor.execute(
-                """
-                SELECT host, affected_item, tool, severity, priority_score,
+                f"""
+                SELECT risk_accepted, host, affected_item, tool, severity, priority_score,
                        has_public_exploit, kev, id
-                FROM vulnerability
+                FROM {risk_source} vulnerability
                 WHERE host IS NOT NULL AND host != ''
                 """
             )
@@ -2933,6 +3042,8 @@ def get_attack_surface_overview(
                     asset["urls"].add(affected_url)
                 if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}$", host, re.IGNORECASE):
                     asset["domains"].add(host)
+                if row.get("risk_accepted") and not include_accepted:
+                    continue
                 asset["vulnerability_count"] += 1
                 asset["sources"].add(str(row.get("tool") or "vulnerability"))
                 asset["max_severity"] = _max_severity([asset["max_severity"], row.get("severity")])
@@ -4593,15 +4704,16 @@ def get_endpoint_network_probe_targets(org_name: str, agent_id: str, limit: int 
     return targets[:limit]
 
 
-def get_endpoint_network_map(org_name: str) -> dict:
+def get_endpoint_network_map(org_name: str, include_accepted: bool = False) -> dict:
     """Build a tenant network map from the latest endpoint network probes."""
+    risk_source = _risk_findings_source("endpoint", include_accepted)
     mark_stale_endpoint_agents(org_name)
     with DatabaseConnectionManager() as connection:
         cursor = connection.cursor(dictionary=True)
         _use_org_database(cursor, org_name)
         _ensure_endpoint_network_schema(cursor)
         cursor.execute(
-            """
+            f"""
             SELECT a.id, a.agent_id, a.hostname, a.display_name, a.os_platform,
                    a.os_name, a.os_version, a.ip_addresses, a.mac_addresses,
                    a.status, a.last_seen_at, a.last_inventory_at,
@@ -4609,7 +4721,7 @@ def get_endpoint_network_map(org_name: str) -> dict:
             FROM endpoint_agents a
             LEFT JOIN (
                 SELECT agent_id, COUNT(*) AS vulnerability_count
-                FROM endpoint_vulnerabilities
+                FROM {risk_source} endpoint_vulnerabilities
                 WHERE present = TRUE
                 GROUP BY agent_id
             ) v_counts ON v_counts.agent_id = a.agent_id
@@ -4939,8 +5051,9 @@ def upsert_endpoint_vuln_cache_entries(
     return changed
 
 
-def get_endpoint_overview(org_name: str) -> dict:
+def get_endpoint_overview(org_name: str, include_accepted: bool = False) -> dict:
     """Return endpoint inventory summary."""
+    risk_source = _risk_findings_source("endpoint", include_accepted)
     mark_stale_endpoint_agents(org_name)
     with DatabaseConnectionManager() as connection:
         cursor = connection.cursor(dictionary=True)
@@ -4955,12 +5068,12 @@ def get_endpoint_overview(org_name: str) -> dict:
         revoked_total = (cursor.fetchone() or {}).get("total") or 0
         cursor.execute("SELECT COUNT(*) AS total FROM endpoint_software WHERE present = TRUE")
         software_total = (cursor.fetchone() or {}).get("total") or 0
-        cursor.execute("SELECT COUNT(*) AS total FROM endpoint_vulnerabilities WHERE present = TRUE")
+        cursor.execute(f"SELECT COUNT(*) AS total FROM {risk_source} endpoint_vulnerabilities WHERE present = TRUE")
         vuln_total = (cursor.fetchone() or {}).get("total") or 0
         cursor.execute(
-            """
+            f"""
             SELECT severity, COUNT(*) AS count
-            FROM endpoint_vulnerabilities
+            FROM {risk_source} endpoint_vulnerabilities
             WHERE present = TRUE
             GROUP BY severity
             """
@@ -4984,8 +5097,10 @@ def list_endpoint_agents(
     status: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    include_accepted: bool = False,
 ) -> dict:
     """List endpoint agents with software and vulnerability counts."""
+    risk_source = _risk_findings_source("endpoint", include_accepted)
     mark_stale_endpoint_agents(org_name)
     limit = max(1, min(int(limit or 100), 500))
     offset = max(0, int(offset or 0))
@@ -5024,7 +5139,7 @@ def list_endpoint_agents(
             ) s_counts ON s_counts.agent_id = a.agent_id
             LEFT JOIN (
                 SELECT agent_id, COUNT(*) AS vulnerability_count
-                FROM endpoint_vulnerabilities
+                FROM {risk_source} endpoint_vulnerabilities
                 WHERE present = TRUE
                 GROUP BY agent_id
             ) v_counts ON v_counts.agent_id = a.agent_id
@@ -5119,8 +5234,10 @@ def list_endpoint_vulnerabilities(
     severity: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    include_accepted: bool = False,
 ) -> dict:
     """List current endpoint vulnerability findings."""
+    risk_source = _risk_findings_source("endpoint", include_accepted)
     limit = max(1, min(int(limit or 100), 500))
     offset = max(0, int(offset or 0))
     clauses = ["v.present = TRUE"]
@@ -5142,7 +5259,7 @@ def list_endpoint_vulnerabilities(
         cursor.execute(
             f"""
             SELECT COUNT(*) AS total
-            FROM endpoint_vulnerabilities v
+            FROM {risk_source} v
             LEFT JOIN endpoint_software s ON s.agent_id = v.agent_id AND s.software_key = v.software_key
             LEFT JOIN endpoint_agents a ON a.agent_id = v.agent_id
             WHERE {where}
@@ -5154,7 +5271,7 @@ def list_endpoint_vulnerabilities(
             f"""
             SELECT v.*, s.name AS software_name, s.version AS software_version,
                    s.ecosystem, a.hostname
-            FROM endpoint_vulnerabilities v
+            FROM {risk_source} v
             LEFT JOIN endpoint_software s ON s.agent_id = v.agent_id AND s.software_key = v.software_key
             LEFT JOIN endpoint_agents a ON a.agent_id = v.agent_id
             WHERE {where}
@@ -5179,17 +5296,18 @@ def list_endpoint_vulnerabilities(
 
 def get_endpoint_vulnerability(org_name: str, finding_id: int) -> dict | None:
     """Return one endpoint vulnerability with package and agent context."""
+    risk_source = _risk_findings_source("endpoint", True)
     with DatabaseConnectionManager() as connection:
         cursor = connection.cursor(dictionary=True)
         _use_org_database(cursor, org_name)
         cursor.execute(
-            """
+            f"""
             SELECT v.*, s.name AS software_name, s.version AS software_version,
                    s.vendor AS software_vendor, s.ecosystem, s.package_type,
                    s.purl AS software_purl, s.cpe AS software_cpe,
                    a.hostname, a.display_name, a.os_name, a.os_version, a.os_arch,
                    a.ip_addresses, a.last_inventory_at
-            FROM endpoint_vulnerabilities v
+            FROM {risk_source} v
             LEFT JOIN endpoint_software s ON s.agent_id = v.agent_id AND s.software_key = v.software_key
             LEFT JOIN endpoint_agents a ON a.agent_id = v.agent_id
             WHERE v.id = %s

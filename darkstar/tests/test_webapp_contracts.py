@@ -27,8 +27,8 @@ def test_password_policy_error(password, expected):
 @pytest.mark.parametrize(
     "payload,detail",
     [
-        ({"targets": "example.com"}, "Provide either mode or scanner, but not both"),
-        ({"targets": "example.com", "mode": 2, "scanner": "nuclei"}, "Provide either mode or scanner, but not both"),
+        ({"targets": "example.com"}, "Choose one scan mode, one scanner, or a list of scanner selections"),
+        ({"targets": "example.com", "mode": 2, "scanner": "nuclei"}, "Choose one scan mode, one scanner, or a list of scanner selections"),
         ({"targets": "example.com", "mode": 99}, "Mode must be one of 1,2,3,4"),
         ({"targets": "example.com", "scanner": "unknown"}, "Unsupported scanner"),
         ({"targets": "   ", "mode": 1}, "Targets cannot be empty"),

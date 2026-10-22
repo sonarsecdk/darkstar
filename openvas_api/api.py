@@ -204,6 +204,13 @@ def list_targets(gmp: Any = Depends(get_gmp)):
     ]
 
 
+@app.get("/scan-configs")
+def scan_configs(gmp: Any = Depends(get_gmp)):
+    root = _parse_xml(gmp.get_scan_configs(filter_string="rows=-1"))
+    return [{"id": item.get("id"), "name": item.findtext("name") or item.get("id")}
+            for item in root.findall(".//config") if item.get("id")]
+
+
 @app.post("/tasks", response_model=TaskInfo)
 def create_task(body: TaskCreate, gmp: Any = Depends(get_gmp)):
     config_id = body.config_id

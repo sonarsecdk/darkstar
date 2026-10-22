@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any
 
 import requests
+
+from darkstar.scanner_profiles import discover_scanner_profiles
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -72,6 +74,7 @@ class ScannerWorker:
         self.session.mount("https://", adapter)
         self.active_threads: dict[int, threading.Thread] = {}
         self.stop_event = threading.Event()
+        self._profiles_reported_at = None
 
     def _api(self, method: str, path: str, **kwargs) -> Any:
         response = self.session.request(
@@ -94,6 +97,11 @@ class ScannerWorker:
                 "status": status,
             },
         )
+
+    def report_profiles(self) -> None:
+        if self._profiles_reported_at is None or time.monotonic() - self._profiles_reported_at >= 300:
+            self._api("POST", "/api/scanner-workers/profiles", json={"items": discover_scanner_profiles()})
+            self._profiles_reported_at = time.monotonic()
 
     def claim(self) -> dict | None:
         payload = self._api(
@@ -161,6 +169,8 @@ class ScannerWorker:
             command.extend(["-m", str(mode)])
         if scanner:
             command.extend(["-s", str(scanner)])
+        if payload.get("profile_id"):
+            command.extend(["--profile", payload["profile_id"]])
         if payload.get("bruteforce"):
             command.append("--bruteforce")
         command.extend(["--bruteforce-timeout", str(payload.get("bruteforce_timeout") or 300)])
@@ -178,7 +188,50 @@ class ScannerWorker:
         except Exception:
             process.terminate()
 
+    def component_status(self, job_id: int, scanner: str, status: str, error: str | None = None) -> bool:
+        result = self._api("POST", f"/api/scanner-workers/jobs/{job_id}/components/{scanner}",
+                           json={"status": status, "error_message": error})
+        return bool(result.get("stop_requested"))
+
     def run_job(self, job: dict) -> None:
+        job_id = int(job["id"])
+        try:
+            selections = (job.get("payload") or {}).get("selections") or []
+            if not selections:
+                status, error = self._run_process(job)
+            else:
+                installed = {(item["scanner"], item["id"]) for item in discover_scanner_profiles()}
+                failed = []
+                stopped = self.send_logs(job_id, [])
+                for selection in selections:
+                    scanner = selection["scanner"]
+                    if stopped:
+                        self.component_status(job_id, scanner, "stopped", "Scan stopped by user")
+                        continue
+                    stopped = self.component_status(job_id, scanner, "running")
+                    if stopped:
+                        self.component_status(job_id, scanner, "stopped", "Scan stopped by user")
+                        continue
+                    if (scanner, selection["profile_id"]) not in installed:
+                        component_status, error = "failed", "Selected profile is no longer installed on this appliance"
+                    else:
+                        payload = dict(job["payload"], mode=None, scanner=scanner, profile_id=selection["profile_id"])
+                        component_status, error = self._run_process(dict(job, payload=payload))
+                    stopped = self.component_status(job_id, scanner, component_status, error) or component_status == "stopped"
+                    if component_status == "failed":
+                        failed.append(scanner)
+                status = "stopped" if stopped else "failed" if failed else "completed"
+                error = "Scan stopped by user" if stopped else "Failed scanners: " + ", ".join(failed) if failed else None
+            self.complete(job_id, status, error)
+        except Exception as exc:
+            try:
+                self.complete(job_id, "failed", str(exc)[:4000])
+            except Exception as complete_exc:
+                print(f"Failed to mark scanner job {job_id} failed: {complete_exc}", file=sys.stderr, flush=True)
+        finally:
+            self.active_threads.pop(job_id, None)
+
+    def _run_process(self, job: dict) -> tuple[str, str | None]:
         job_id = int(job["id"])
         command = self.build_command(job)
         log_prefix = f"[{self.name}]"
@@ -187,7 +240,8 @@ class ScannerWorker:
         process: subprocess.Popen | None = None
 
         try:
-            self.send_logs(job_id, [f"{log_prefix} starting: {' '.join(command)}"])
+            if self.send_logs(job_id, [f"{log_prefix} starting: {' '.join(command)}"]):
+                return "stopped", "Scan stopped by user"
             env = os.environ.copy()
             env["PYTHONPATH"] = f"{PROJECT_ROOT}{os.pathsep}{BASE_DIR}{os.pathsep}{env.get('PYTHONPATH', '')}"
             process = subprocess.Popen(
@@ -235,31 +289,27 @@ class ScannerWorker:
 
             return_code = process.wait()
             if stop_requested:
-                self.complete(job_id, "stopped", "Scan stopped by user")
+                return "stopped", "Scan stopped by user"
             elif return_code == 0:
-                self.complete(job_id, "completed")
+                return "completed", None
             else:
                 error_message = (
                     "\n".join(output_tail)
                     if output_tail
                     else f"Scanner exited with code {return_code}"
                 )
-                self.complete(job_id, "failed", error_message[:4000])
+                return "failed", error_message[:4000]
         except Exception as exc:
             if process and process.poll() is None:
                 self._terminate_process_group(process)
-            try:
-                self.complete(job_id, "failed", str(exc)[:4000])
-            except Exception as complete_exc:
-                print(f"Failed to mark scanner job {job_id} failed: {complete_exc}", file=sys.stderr, flush=True)
-        finally:
-            self.active_threads.pop(job_id, None)
+            return "failed", str(exc)[:4000]
 
     def run_forever(self) -> None:
         print(f"Darkstar scanner worker '{self.name}' connected to {self.orchestrator_url}", flush=True)
         while not self.stop_event.is_set():
             try:
                 self.heartbeat("busy" if self.active_threads else "online")
+                self.report_profiles()
                 while len(self.active_threads) < self.max_parallel_jobs:
                     job = self.claim()
                     if not job:

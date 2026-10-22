@@ -6,6 +6,7 @@ vulnerability scanners.
 """
 
 import enum
+from darkstar.scanner_profiles import nuclei_directory, profile_file
 import fcntl
 import glob
 import json
@@ -155,10 +156,12 @@ class NucleiScanner:
         target: str,
         org_name: str,
         mode: NucleiMode = NucleiMode.STANDARD,
+        profile: str | None = None,
     ):
         self.target = target
         self.org_name = org_name
         self.mode = mode
+        self.profile = profile
         self.severities = set(NUCLEI_SEVERITIES)
 
         self._temp_target_file = None
@@ -274,6 +277,10 @@ class NucleiScanner:
                     "10",
                     "-j",
                 ]
+
+        if self.profile and self.profile != "default":
+            selected = profile_file(nuclei_directory(), self.profile, {".yaml", ".yml"})
+            nuclei_command[nuclei_command.index("-t") + 1] = str(selected)
 
         logger.debug(f"Command: {' '.join(nuclei_command)}")
 

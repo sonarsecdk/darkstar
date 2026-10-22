@@ -120,6 +120,7 @@ class worker:
         org_name: str,
         bruteforce: bool = False,
         bruteforce_timeout: int = 300,
+        profile: str | None = None,
     ):
         self.targets = targets
 
@@ -130,6 +131,7 @@ class worker:
         self.org_domain = org_name
         self.bruteforce = bruteforce
         self.bruteforce_timeout = bruteforce_timeout
+        self.profile = profile
 
     async def run_bbot(
         self, mode: Literal["passive", "normal", "aggressive", "attack_surface"]
@@ -273,7 +275,7 @@ class worker:
     async def run_nuclei(self, target, mode: NucleiMode = NucleiMode.STANDARD):
         logger.info(f"Running Nuclei scan with mode: {mode.value}")
 
-        nuclei_scanner = NucleiScanner(target, self.org_domain, mode=mode)
+        nuclei_scanner = NucleiScanner(target, self.org_domain, mode=mode, **({"profile": self.profile} if self.profile else {}))
         await asyncio.to_thread(nuclei_scanner.run)
 
     async def detect_wordpress(self, target):
@@ -306,7 +308,7 @@ class worker:
     async def run_openvas_scan(self, targets):
         logger.info("Running OpenVAS scan on specified targets")
 
-        openvas_scanner = OpenVASScanner(org_name=self.org_domain)
+        openvas_scanner = OpenVASScanner(org_name=self.org_domain, **({"config_id": self.profile} if self.profile else {}))
         await openvas_scanner.scan_targets(targets)
 
     async def run_asteroid(self, target, mode: Literal["normal", "aggressive"]):
@@ -322,7 +324,7 @@ class worker:
 
     async def run_external_vulnerability_scanner(self, scanner: str):
         logger.info("Running external vulnerability scanner: %s", scanner)
-        external_scanner = ExternalVulnerabilityScanner(self.all_targets, self.org_domain)
+        external_scanner = ExternalVulnerabilityScanner(self.all_targets, self.org_domain, **({"profile": self.profile} if self.profile else {}))
         runner = {
             "nikto": external_scanner.run_nikto,
             "wapiti": external_scanner.run_wapiti,
@@ -585,6 +587,7 @@ def setup_parser():
         argparse.ArgumentParser: Configured argument parser
     """
     parser = argparse.ArgumentParser()
+    parser.add_argument("--profile", help="Installed profile ID for the selected scanner")
     target_group = parser.add_mutually_exclusive_group(required=True)
     target_group.add_argument(
         "-t",
@@ -748,6 +751,7 @@ def main(args=None):
         org_name=args.domain,
         bruteforce=args.bruteforce,
         bruteforce_timeout=args.bruteforce_timeout,
+        profile=args.profile,
     )
 
     asyncio.run(scanner.run())

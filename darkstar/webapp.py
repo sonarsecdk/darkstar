@@ -42,6 +42,11 @@ from dotenv import load_dotenv
 _event_loop = None
 
 from .core.db_helper import (
+    create_scan_components,
+    get_scan_components,
+    update_scan_component,
+    get_scanner_profiles,
+    update_scanner_profiles,
     OrganizationAlreadyExistsError,
     OrganizationConflictError,
     authenticate_api_key,
@@ -260,6 +265,7 @@ def _scheduler_loop():
                         targets=schedule["targets"],
                         mode=int(schedule["scan_mode"]) if schedule.get("scan_mode") and str(schedule["scan_mode"]).isdigit() else None,
                         scanner=schedule.get("scanner"),
+                        selections=json.loads(schedule.get("selections_json") or "[]"),
                         scan_name=schedule.get("scan_name"),
                         bruteforce=bool(schedule.get("bruteforce")),
                         bruteforce_timeout=int(schedule.get("bruteforce_timeout") or 300),
@@ -273,6 +279,10 @@ def _scheduler_loop():
                                 "Scheduled scan %s skipped for now because an identical scan is active",
                                 schedule["id"],
                             )
+                            continue
+                        if exc.status_code == 400:
+                            logger.warning("Scheduled scan %s blocked: %s", schedule["id"], exc.detail)
+                            mark_schedule_run(org_db, schedule["id"])
                             continue
                         raise
                     mark_schedule_run(org_db, schedule["id"])
@@ -387,6 +397,16 @@ class ScannerHeartbeatRequest(BaseModel):
     status: str = Field(default="online", max_length=32)
 
 
+class ScannerProfile(BaseModel):
+    scanner: str = Field(min_length=1, max_length=100)
+    id: str = Field(min_length=1, max_length=1024)
+    name: str = Field(min_length=1, max_length=1024)
+
+
+class ScannerCatalogRequest(BaseModel):
+    items: list[ScannerProfile] = Field(max_length=50000)
+
+
 class ScannerClaimRequest(BaseModel):
     capabilities: list[str] | None = None
     lease_seconds: int = Field(default=900, ge=60, le=7200)
@@ -455,10 +475,16 @@ class RiskAcceptanceRequest(BaseModel):
     expires_at: datetime | None = None
 
 
+class ScannerSelection(BaseModel):
+    scanner: str = Field(min_length=1, max_length=100)
+    profile_id: str = Field(min_length=1, max_length=1024)
+
+
 class ScanStartRequest(BaseModel):
     targets: str = Field(min_length=1)
     mode: int | None = Field(default=None)
     scanner: str | None = Field(default=None)
+    selections: list[ScannerSelection] = Field(default_factory=list, max_length=30)
     preferred_node_id: str | None = Field(default=None, max_length=64)
     scan_name: str | None = Field(default=None, max_length=255)
     bruteforce: bool = False
@@ -1051,10 +1077,10 @@ def _validate_scan_payload(body: ScanStartRequest):
     has_mode = body.mode is not None
     has_scanner = bool(body.scanner)
 
-    if has_mode == has_scanner:
+    if sum((has_mode, has_scanner, bool(body.selections))) != 1:
         raise HTTPException(
             status_code=400,
-            detail="Provide either mode or scanner, but not both",
+            detail="Choose one scan mode, one scanner, or a list of scanner selections",
         )
 
     if body.mode is not None and body.mode not in {1, 2, 3, 4}:
@@ -1065,10 +1091,28 @@ def _validate_scan_payload(body: ScanStartRequest):
 
     _normalize_scan_targets(body.targets)
 
+    if body.selections:
+        if not body.preferred_node_id:
+            raise HTTPException(status_code=400, detail="Choose an appliance to use its installed profiles")
+        scanners = [item.scanner for item in body.selections]
+        if len(scanners) != len(set(scanners)):
+            raise HTTPException(status_code=400, detail="Choose one profile per scanner")
+        if any(scanner not in ALLOWED_SCANNERS for scanner in scanners):
+            raise HTTPException(status_code=400, detail="Unsupported scanner")
+
     if body.preferred_node_id:
         node = get_scanner_node_record(body.preferred_node_id)
         if not node or node.get("revoked_at"):
             raise HTTPException(status_code=400, detail="Selected scanner appliance is not available")
+        capabilities = set(node.get("capabilities") or [])
+        catalog = {(item["scanner"], item["id"]): item for item in get_scanner_profiles(body.preferred_node_id)["items"]} if body.selections else {}
+        for selection in body.selections:
+            if not capabilities.intersection({"*", "all", selection.scanner, "scanner:" + selection.scanner}):
+                raise HTTPException(status_code=400, detail=f"Appliance does not support {selection.scanner}")
+            if (selection.scanner, selection.profile_id) not in catalog:
+                raise HTTPException(status_code=400, detail=f"Selected {selection.scanner} profile is not installed; refresh the appliance profiles")
+        return catalog
+    return {}
 
 
 def _scan_signature(mode: int | None, scanner: str | None, targets: str) -> tuple[str, str]:
@@ -1085,7 +1129,7 @@ def _scan_signature(mode: int | None, scanner: str | None, targets: str) -> tupl
 
 
 def _active_scan_conflict(org_db: str, body: ScanStartRequest) -> dict | None:
-    requested_kind, requested_targets = _scan_signature(body.mode, body.scanner, body.targets)
+    requested_kind, requested_targets = _scan_signature(body.mode, "selection" if body.selections else body.scanner, body.targets)
     requested_node = body.preferred_node_id or ""
     for scan in get_scan_history(org_db, limit=100):
         if scan.get("status") not in {"queued", "running", "stopping"}:
@@ -1093,6 +1137,11 @@ def _active_scan_conflict(org_db: str, body: ScanStartRequest) -> dict | None:
         active_kind, active_targets = _scan_signature(None, scan.get("scan_mode"), scan.get("targets") or "")
         queue_job = get_scanner_job_for_scan(org_db, int(scan.get("id") or 0))
         active_node = (queue_job or {}).get("preferred_node_id") or ""
+        if body.selections:
+            requested = {(item.scanner, item.profile_id) for item in body.selections}
+            active = {(item["scanner"], item["profile_id"]) for item in ((queue_job or {}).get("payload") or {}).get("selections", [])}
+            if requested != active:
+                continue
         if active_kind == requested_kind and active_targets == requested_targets and active_node == requested_node:
             return scan
     return None
@@ -1100,7 +1149,7 @@ def _active_scan_conflict(org_db: str, body: ScanStartRequest) -> dict | None:
 
 def _queue_scan(org_db: str, body: ScanStartRequest, schedule_id: int | None = None, allow_overlap: bool = False) -> int:
     """Create a scan record and enqueue it for scanner workers."""
-    _validate_scan_payload(body)
+    catalog = _validate_scan_payload(body)
     if not allow_overlap:
         conflicting_scan = _active_scan_conflict(org_db, body)
         if conflicting_scan:
@@ -1114,29 +1163,39 @@ def _queue_scan(org_db: str, body: ScanStartRequest, schedule_id: int | None = N
 
     targets = _normalize_scan_targets(body.targets)
     body.targets = targets
-    scan_name = body.scan_name or f"Scan {body.mode or body.scanner}"
+    scan_kind = "selection" if body.selections else str(body.mode or body.scanner)
+    scan_name = body.scan_name or (" + ".join(item.scanner for item in body.selections) if body.selections else f"Scan {scan_kind}")
+    scan_id = None
     try:
         scan_id = create_scan_record(
             org_db,
             scan_name=scan_name,
-            scan_mode=str(body.mode or body.scanner),
+            scan_mode=scan_kind,
             targets=targets,
         )
         payload = body.dict()
-        scanner = body.scanner if body.scanner else None
+        if body.selections:
+            payload["selections"] = [dict(item.dict(), profile_name=catalog[(item.scanner, item.profile_id)]["name"]) for item in body.selections]
+            create_scan_components(org_db, scan_id, payload["selections"])
+        # The job is pinned to the appliance; all selections were checked above.
+        scanner = body.selections[0].scanner if body.selections else body.scanner
         enqueue_scanner_job(
             org_db,
             scan_id,
             scan_name=scan_name,
-            scan_mode=str(body.mode or body.scanner),
+            scan_mode=scan_kind,
             scanner=scanner,
             targets=targets,
             payload=payload,
             schedule_id=schedule_id,
             preferred_node_id=body.preferred_node_id,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        if scan_id is not None:
+            update_scan_status(org_db, scan_id, "failed", error_message=str(exc)[:4000])
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise
     if body.preferred_node_id:
         insert_scan_log(org_db, scan_id, f"Queued for selected scanner appliance {body.preferred_node_id}", "info")
     else:
@@ -2284,6 +2343,43 @@ def scanner_worker_heartbeat(request: Request, body: ScannerHeartbeatRequest):
     return {"ok": True, "node_id": node["node_id"], "max_parallel_jobs": node.get("max_parallel_jobs") or 1}
 
 
+@app.post("/api/scanner-workers/profiles")
+def scanner_worker_profiles(request: Request, body: ScannerCatalogRequest):
+    node = _get_scanner_node(request)
+    if any(item.scanner not in ALLOWED_SCANNERS for item in body.items):
+        raise HTTPException(status_code=400, detail="Unsupported scanner in catalog")
+    update_scanner_profiles(node["node_id"], [item.dict() for item in body.items])
+    return {"ok": True}
+
+
+@app.get("/api/scanner-nodes/{node_id}/profiles")
+def scanner_node_profiles(request: Request, node_id: str, scanner: str | None = None, search: str = "", offset: int = 0, limit: int = 100):
+    _require_min_role(request, "security_analyst")
+    node = get_scanner_node_record(node_id)
+    if not node or node.get("revoked_at"):
+        raise HTTPException(status_code=404, detail="Scanner appliance not found")
+    catalog = get_scanner_profiles(node_id)
+    capabilities = set(node.get("capabilities") or [])
+    items = [item for item in catalog["items"] if capabilities.intersection({"*", "all", item["scanner"], "scanner:" + item["scanner"]})]
+    scanners = sorted({item["scanner"] for item in items})
+    items = [item for item in items if (not scanner or item["scanner"] == scanner) and search.lower() in (item["name"] + " " + item["id"]).lower()]
+    offset = max(0, offset)
+    return {"items": items[offset:offset + max(1, min(limit, 200))], "total": len(items), "scanners": scanners, "updated_at": catalog["updated_at"]}
+
+
+@app.post("/api/scanner-workers/jobs/{job_id}/components/{scanner}")
+def scanner_worker_component(request: Request, job_id: int, scanner: str, body: ScannerCompleteRequest):
+    node = _get_scanner_node(request)
+    job = extend_scanner_job_lease(job_id, node["node_id"])
+    if not job or job.get("status") not in {"running", "stopping"}:
+        raise HTTPException(status_code=404, detail="Active scanner job not found or not owned by this node")
+    if body.status not in {"running", "completed", "failed", "stopped"}:
+        raise HTTPException(status_code=400, detail="Invalid scanner status")
+    if not update_scan_component(job["org_db_name"], job["scan_id"], scanner, body.status, body.error_message):
+        raise HTTPException(status_code=404, detail="Scanner selection not found")
+    return {"ok": True, "stop_requested": job.get("status") == "stopping"}
+
+
 @app.post("/api/scanner-workers/jobs/claim")
 def scanner_worker_claim(request: Request, body: ScannerClaimRequest):
     node = _get_scanner_node(request)
@@ -2405,6 +2501,7 @@ def scan_detail(request: Request, scan_id: int):
         raise HTTPException(status_code=404, detail="Scan not found")
     return {
         "scan": scan,
+        "components": get_scan_components(org_db, scan_id) if scan.get("scan_mode") == "selection" else [],
         "queue_job": get_scanner_job_for_scan(org_db, scan_id),
         "logs": get_scan_logs(org_db, scan_id, limit=250),
     }
@@ -2602,9 +2699,9 @@ def create_schedule(request: Request, body: ScheduleRequest):
     try:
         schedule_id = create_scan_schedule(
             org_db,
-            scan_name=body.scan_name or f"Scheduled {body.mode or body.scanner}",
+            scan_name=body.scan_name or ("Scheduled " + " + ".join(item.scanner for item in body.selections) if body.selections else f"Scheduled {body.mode or body.scanner}"),
             targets=body.targets.strip(),
-            scan_mode=str(body.mode) if body.mode is not None else None,
+            scan_mode="selection" if body.selections else str(body.mode) if body.mode is not None else None,
             scanner=body.scanner,
             interval_minutes=body.interval_minutes,
             bruteforce=body.bruteforce,
@@ -2612,6 +2709,7 @@ def create_schedule(request: Request, body: ScheduleRequest):
             start_at=body.start_at,
             end_at=body.end_at,
             preferred_node_id=body.preferred_node_id,
+            **({"selections": [item.dict() for item in body.selections]} if body.selections else {}),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -2647,6 +2745,7 @@ def run_schedule_now(request: Request, schedule_id: int):
         targets=schedule["targets"],
         mode=int(schedule["scan_mode"]) if schedule.get("scan_mode") and str(schedule["scan_mode"]).isdigit() else None,
         scanner=schedule.get("scanner"),
+        selections=json.loads(schedule.get("selections_json") or "[]"),
         scan_name=schedule.get("scan_name"),
         bruteforce=bool(schedule.get("bruteforce")),
         bruteforce_timeout=int(schedule.get("bruteforce_timeout") or 300),

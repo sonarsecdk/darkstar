@@ -87,7 +87,21 @@ CREATE TABLE IF NOT EXISTS scan_logs (
     INDEX idx_scan_id (scan_id)
 );
 
+CREATE TABLE IF NOT EXISTS scan_components (
+    scan_id INT NOT NULL,
+    scanner VARCHAR(100) NOT NULL,
+    profile_id VARCHAR(1024) NOT NULL,
+    profile_name VARCHAR(1024) NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'queued',
+    error_message TEXT DEFAULT NULL,
+    started_at DATETIME DEFAULT NULL,
+    finished_at DATETIME DEFAULT NULL,
+    PRIMARY KEY (scan_id, scanner),
+    FOREIGN KEY (scan_id) REFERENCES scans(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS scan_schedules (
+    selections_json LONGTEXT DEFAULT NULL,
     id INT AUTO_INCREMENT PRIMARY KEY,
     scan_name VARCHAR(255) NOT NULL,
     scan_mode VARCHAR(50) DEFAULT NULL,
@@ -170,6 +184,8 @@ CREATE TABLE IF NOT EXISTS m365_secure_score_items (
 );
 
 CREATE TABLE IF NOT EXISTS scanner_nodes (
+    profiles_json LONGTEXT DEFAULT NULL,
+    profiles_updated_at DATETIME DEFAULT NULL,
     id INT AUTO_INCREMENT PRIMARY KEY,
     node_id VARCHAR(64) NOT NULL UNIQUE,
     name VARCHAR(255) NOT NULL,

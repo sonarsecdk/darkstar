@@ -131,7 +131,7 @@ class OpenVASScanner:
     - Parse vulnerabilities and store in database
     """
 
-    def __init__(self, org_name: str, base_url: str = None):
+    def __init__(self, org_name: str, base_url: str = None, config_id: str | None = None):
         """
         Initialize OpenVAS scanner.
 
@@ -140,6 +140,7 @@ class OpenVASScanner:
             base_url: OpenVAS API base URL (defaults to Docker service URL)
         """
         self.org_name = org_name
+        self.config_id = config_id
         self.base_url = base_url or os.getenv(
             "OPENVAS_API_URL", "http://openvas-api:8008"
         )
@@ -293,7 +294,7 @@ class OpenVASScanner:
 
             # 2) For each new target, create a scan task
             task_creates = [
-                openvas.create_task(name=f"Scan for {t['name']}", target_id=t["id"])
+                openvas.create_task(name=f"Scan for {t['name']}", target_id=t["id"], **({"config_id": self.config_id} if self.config_id else {}))
                 for t in target_results
             ]
 

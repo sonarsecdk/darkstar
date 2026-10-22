@@ -87,8 +87,10 @@ class OpenVASAPIClient:
         self._raise_for_status(resp)
         return resp.json()
 
-    async def create_task(self, name: str, target_id: str) -> Dict[str, Any]:
+    async def create_task(self, name: str, target_id: str, config_id: str | None = None) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"name": name, "target_id": target_id}
+        if config_id:
+            payload["config_id"] = config_id
         resp = await self._client.post("/tasks", json=payload)
         self._raise_for_status(resp)
         return resp.json()

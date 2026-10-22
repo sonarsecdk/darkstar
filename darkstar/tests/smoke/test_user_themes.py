@@ -15,12 +15,15 @@ pytestmark = pytest.mark.smoke
 def theme_client(monkeypatch):
     monkeypatch.setattr(webapp, "list_organizations", list)
     monkeypatch.setattr(webapp, "scheduler_started", True)
+    monkeypatch.setattr(webapp, "get_organization_id", lambda org_db: 7)
     monkeypatch.setattr(webapp, "authenticate_api_key", lambda token: None)
     with TestClient(webapp.app) as client:
         yield client
 
 
 def sign_in(client, **session):
+    if session.get("org_db"):
+        session.setdefault("org_id", 7)
     middleware = next(item for item in webapp.app.user_middleware if item.cls.__name__ == "SessionMiddleware")
     signer = TimestampSigner(str(middleware.kwargs["secret_key"]))
     cookie = signer.sign(base64.b64encode(json.dumps(session).encode())).decode()
@@ -71,9 +74,20 @@ def test_theme_requires_a_completed_personal_login(theme_client, monkeypatch, se
 
 
 def test_api_key_does_not_identify_a_personal_account(theme_client, monkeypatch):
-    monkeypatch.setattr(webapp, "authenticate_api_key", lambda token: {"org_db_name": "tenant_a", "role": "platform_admin"})
+    monkeypatch.setattr(webapp, "authenticate_api_key", lambda token: {"org_id": 7, "org_db_name": "tenant_a", "role": "platform_admin"})
     response = theme_client.patch("/api/me/theme", headers={"Authorization": "Bearer test-key"}, json={"theme": "daylight"})
     assert response.status_code == 403
+
+
+@pytest.mark.parametrize("org_id", [None, 8])
+def test_stale_organization_session_cannot_save_theme(theme_client, monkeypatch, org_id):
+    def unexpected_write(*args):
+        pytest.fail("An expired organization session reached the theme update")
+
+    monkeypatch.setattr(webapp, "update_user_theme", unexpected_write)
+    sign_in(theme_client, user_id=12, org_db="tenant_a", org_id=org_id, role="viewer")
+    response = theme_client.patch("/api/me/theme", json={"theme": "daylight"})
+    assert response.status_code == 401
 
 
 def test_deleted_account_cannot_save_theme(theme_client, monkeypatch):

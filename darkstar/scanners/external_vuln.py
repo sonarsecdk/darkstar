@@ -480,7 +480,7 @@ class ZAPScanner:
         after = self._zap_api("JSON/ascan/view/scanPolicyNames/")
         if not after or "scanPolicyNames" not in after:
             raise RuntimeError("ZAP could not identify the imported policy")
-        # ZAP uses the filename, adding a suffix if that policy already exists.
+        # ZAP may rename an import to avoid overwriting an existing policy.
         imported = set(after["scanPolicyNames"]) - set(before["scanPolicyNames"])
         if len(imported) != 1:
             raise RuntimeError("ZAP did not identify exactly one imported policy")

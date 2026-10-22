@@ -175,7 +175,8 @@ def test_zap_recon_never_starts_active_scan(monkeypatch):
     assert parse_qs(urlsplit(calls[0]).query)['url'] == [scanner.targets[0]]
 
 
-def test_zap_imports_and_executes_selected_active_policy(monkeypatch, tmp_path):
+@pytest.mark.parametrize("assigned_name", ["custom2", "A & B"])
+def test_zap_imports_and_executes_selected_active_policy(monkeypatch, tmp_path, assigned_name):
     (tmp_path / 'custom.policy').write_text('<configuration><policy>A &amp; B</policy></configuration>')
     monkeypatch.setenv('ZAP_POLICY_DIR', str(tmp_path))
     scanner = ZAPScanner('https://example.test', 'org', profile='custom.policy')
@@ -187,7 +188,7 @@ def test_zap_imports_and_executes_selected_active_policy(monkeypatch, tmp_path):
         nonlocal imported
         calls.append(path)
         if 'scanPolicyNames' in path:
-            return {"scanPolicyNames": ['custom', 'custom2'] if imported else ['custom']}
+            return {"scanPolicyNames": ['custom', assigned_name] if imported else ['custom']}
         if 'importScanPolicy' in path:
             imported = True
             return {"Result": "OK"}
@@ -198,7 +199,7 @@ def test_zap_imports_and_executes_selected_active_policy(monkeypatch, tmp_path):
     scanner._zap_api = api
     scanner.run()
     active = next(path for path in calls if '/ascan/action/scan/' in path)
-    assert parse_qs(urlsplit(active).query)['scanPolicyName'] == ['custom2']
+    assert parse_qs(urlsplit(active).query)['scanPolicyName'] == [assigned_name]
     assert any('importScanPolicy' in path for path in calls)
     scanner._stop_daemon.assert_called_once()
 

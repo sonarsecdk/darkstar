@@ -278,6 +278,17 @@ def _install_dashboard_mocks(page, base_url):
                 },
             )
             return
+        if path == "/api/scanner-nodes/node-1/profiles":
+            profiles = [
+                {"scanner": "openvas", "id": "network-policy", "name": "Network scan"},
+                {"scanner": "zap", "id": "default", "name": "Recon"},
+                {"scanner": "zap", "id": "custom.policy", "name": "Active: Custom"},
+            ]
+            scanner = (query.get("scanner") or [""])[0]
+            search = (query.get("search") or [""])[0].lower()
+            items = [item for item in profiles if (not scanner or scanner == item["scanner"]) and search in item["name"].lower()]
+            _json(route, {"items": items, "total": len(items), "scanners": ["openvas", "zap"], "updated_at": "2026-10-22T12:00:00"})
+            return
         if path == "/api/scanner-nodes/available":
             _json(
                 route,
@@ -549,5 +560,48 @@ def test_risk_acceptance_filter_and_revocation(darkstar_server):
             assert [method for method, _ in writes] == ["POST", "DELETE"]
             assert writes[0][1]["expires_at"] is None
             assert original["unexpected"] == []
+        finally:
+            browser.close()
+
+
+def test_scan_center_selects_profiles_and_keeps_them_in_schedules(darkstar_server):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page(viewport={"width": 1440, "height": 1200})
+            state = _install_dashboard_mocks(page, darkstar_server)
+            page.goto(f'{darkstar_server}/', wait_until='networkidle')
+            page.locator('[data-tab="scan"]').click()
+            page.locator('#applianceInput').select_option('node-1')
+            page.locator('#targetsInput').fill('192.0.2.1')
+            page.locator('#modeInput').select_option('2')
+            openvas = page.locator('#scannerSelections fieldset').filter(has=page.locator('input[value="openvas"]'))
+            zap = page.locator('#scannerSelections fieldset').filter(has=page.locator('input[value="zap"]'))
+            openvas.locator('[type="checkbox"]').check()
+            zap.locator('[type="checkbox"]').check()
+            expect(page.locator('#modeInput')).to_have_value('')
+            page.get_by_role('button', name='Launch Scan').click()
+            expect(page.locator('#scanMessage')).to_have_text('Choose a profile for each selected scanner.')
+            openvas.locator('select').select_option('network-policy')
+            zap.locator('[type="search"]').fill('Recon')
+            expect(zap.locator('select option')).to_have_count(2)
+            zap.locator('select').select_option('default')
+            page.get_by_role('button', name='Launch Scan').click()
+            expect(page.locator('#debug-tab.active')).to_be_visible()
+            selections = [{'scanner': 'openvas', 'profile_id': 'network-policy'}, {'scanner': 'zap', 'profile_id': 'default'}]
+            assert state['scan_requests'][-1]['selections'] == selections
+            assert state['scan_requests'][-1]['mode'] is None
+            page.locator('[data-tab="scan"]').click()
+            page.locator('#recurringScanInput').check()
+            page.get_by_role('button', name='Launch Scan').click()
+            expect(page.locator('#scanMessage')).to_have_text('Recurring scan created.')
+            assert state['schedule_requests'][-1]['selections'] == selections
+            page.locator('#modeInput').select_option('1')
+            expect(openvas.locator('[type="checkbox"]')).not_to_be_checked()
+            expect(zap.locator('[type="checkbox"]')).not_to_be_checked()
+            assert state['unexpected'] == []
+            page.screenshot(path='test-results/playwright/scanner-selection.png', full_page=True)
         finally:
             browser.close()

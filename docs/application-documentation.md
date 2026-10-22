@@ -509,3 +509,34 @@ Monthly:
 - rotate unused API keys
 - review user roles and MFA/SSO enforcement
 - check CI/CD security artifacts
+
+### Scanner selections and installed profiles
+
+Scan Center can run several scanners as one scan. Choose an appliance, tick the
+scanners, then select one installed profile for each. Search and page through
+large catalogs. OpenVAS exposes its scan configurations; Nuclei exposes installed
+YAML templates; ZAP offers recon (spider and passive scan) and installed `.policy`
+files for active scanning. Other advertised scanners use their existing default
+behavior. Nuclei workflow files and ZAP automation plans are different formats
+and are not advertised as templates or scan policies.
+
+Workers report their installed catalog every five minutes. `NUCLEI_TEMPLATES_DIR`
+and `ZAP_POLICY_DIR` select the local template and policy directories. OpenVAS
+configurations come from the appliance's `OPENVAS_API_URL`. An unavailable engine
+is omitted; a removed profile fails its scanner instead of silently using a
+default. Install profiles as an appliance administrator, then wait for the next
+catalog report.
+
+Selections are pinned to that appliance and execute sequentially under the
+existing queue job. A failed scanner does not prevent the others from running.
+The scan detail drawer shows each scanner's profile, status, and error. The whole
+scan fails if any scanner failed; stopping it stops the remaining selections.
+Recurring scans retain the same choices and validate them again at execution.
+Legacy scan modes and single-scanner requests remain available.
+
+Deploy the web application, worker, and OpenVAS API together. Before reverting
+this feature, stop combined scans and disable their schedules in Scan Center.
+Then revert the feature merge and redeploy the matching web/worker versions.
+The additive `scan_components` table and catalog/schedule columns may remain:
+reverting code does not delete findings or scan evidence. Old workers cannot
+execute combined selections. New workers retain compatibility with legacy jobs.

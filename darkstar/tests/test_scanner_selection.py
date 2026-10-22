@@ -190,6 +190,10 @@ def test_zap_imports_and_executes_selected_active_policy(monkeypatch, tmp_path, 
         if 'scanPolicyNames' in path:
             return {"scanPolicyNames": ['custom', assigned_name] if imported else ['custom']}
         if 'importScanPolicy' in path:
+            import xml.etree.ElementTree as ET
+            copy = Path(parse_qs(urlsplit(path).query)['path'][0])
+            assert copy.stem.startswith('darkstar-')
+            assert ET.parse(copy).getroot().findtext('policy') == copy.stem
             imported = True
             return {"Result": "OK"}
         if '/action/scan/' in path: return {"scan": "1"}
@@ -202,6 +206,7 @@ def test_zap_imports_and_executes_selected_active_policy(monkeypatch, tmp_path, 
     assert parse_qs(urlsplit(active).query)['scanPolicyName'] == [assigned_name]
     assert any('importScanPolicy' in path for path in calls)
     scanner._stop_daemon.assert_called_once()
+    assert (tmp_path / "custom.policy").read_text() == '<configuration><policy>A &amp; B</policy></configuration>'
 
 
 def test_nuclei_executes_only_selected_template(monkeypatch, tmp_path):

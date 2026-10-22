@@ -17,6 +17,8 @@ import socket
 import subprocess
 import tempfile
 import time
+import uuid
+import xml.etree.ElementTree as ET
 from urllib.parse import urlparse, urlencode
 
 from darkstar.scanner_profiles import profile_file, zap_policy_directory
@@ -474,7 +476,17 @@ class ZAPScanner:
         before = self._zap_api("JSON/ascan/view/scanPolicyNames/")
         if not before or "scanPolicyNames" not in before:
             raise RuntimeError("ZAP could not list its scan policies")
-        result = self._zap_api("JSON/ascan/action/importScanPolicy/?" + urlencode({"path": str(path)}))
+        tree = ET.parse(path)
+        policy = tree.getroot().find("policy")
+        if policy is None:
+            raise RuntimeError("Selected ZAP file has no policy name")
+        # Older ZAP versions reject duplicate names. Import a private copy so
+        # existing policies and the administrator's source file stay intact.
+        policy.text = "darkstar-" + uuid.uuid4().hex
+        with tempfile.TemporaryDirectory(prefix="darkstar_zap_policy_") as directory:
+            copy_path = os.path.join(directory, policy.text + ".policy")
+            tree.write(copy_path, encoding="utf-8", xml_declaration=True)
+            result = self._zap_api("JSON/ascan/action/importScanPolicy/?" + urlencode({"path": copy_path}))
         if not result or result.get("Result") != "OK":
             raise RuntimeError("ZAP could not import the selected policy")
         after = self._zap_api("JSON/ascan/view/scanPolicyNames/")

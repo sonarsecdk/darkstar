@@ -250,6 +250,104 @@ async function loadScannerApplianceOptions() {
         state.scannerAppliances = [];
     }
     updateScanWorkerWarning();
+    await loadScannerProfiles();
+}
+
+function selectedScanners() {
+    return [...document.querySelectorAll('#scannerSelections input[type="checkbox"]:checked')].map(checkbox => ({
+        scanner: checkbox.value,
+        profile_id: checkbox.closest('fieldset').querySelector('select').value,
+    }));
+}
+
+function clearScannerSelections() {
+    document.querySelectorAll('#scannerSelections input[type="checkbox"]').forEach(input => {
+        input.checked = false;
+        input.closest('fieldset').querySelector('.profile-controls').classList.add('hidden');
+    });
+}
+
+async function loadScannerProfiles() {
+    const container = document.getElementById('scannerSelections');
+    const nodeId = document.getElementById('applianceInput').value;
+    if (container.dataset.nodeId === nodeId && container.dataset.orgDb === state.orgDb) return;
+    container.dataset.nodeId = nodeId;
+    container.dataset.orgDb = state.orgDb;
+    container.textContent = nodeId ? 'Loading installed profiles…' : 'Choose an appliance first.';
+    if (!nodeId) return;
+    const orgDb = state.orgDb;
+    try {
+        const catalog = await requestJson(`/api/scanner-nodes/${encodeURIComponent(nodeId)}/profiles?limit=1`);
+        if (container.dataset.nodeId !== nodeId || state.orgDb !== orgDb) return;
+        container.innerHTML = '';
+        if (!catalog.scanners.length) {
+            container.textContent = 'This appliance has not reported any installed profiles yet.';
+            return;
+        }
+        catalog.scanners.forEach(scanner => {
+            const label = scanner === "zap" ? "OWASP ZAP" : document.querySelector(`#scannerInput option[value="${CSS.escape(scanner)}"]`)?.textContent || scanner;
+            const fieldset = document.createElement('fieldset');
+            fieldset.className = 'form-group';
+            fieldset.innerHTML = `
+                <label><input type="checkbox" value="${escapeHtml(scanner)}"> ${escapeHtml(label)}</label>
+                <div class="profile-controls hidden">
+                    <label>Search ${escapeHtml(label)} profiles <input type="search" placeholder="Profile name or template path"></label>
+                    <label>Profile <select class="filter-select"><option value="">Choose a profile</option></select></label>
+                    <div><button type="button" class="btn-secondary btn-sm profile-previous">Previous</button>
+                    <span class="field-hint profile-count"></span>
+                    <button type="button" class="btn-secondary btn-sm profile-next">Next</button></div>
+                    <p class="form-message profile-error" role="status"></p>
+                </div>`;
+            container.appendChild(fieldset);
+            const checkbox = fieldset.querySelector('[type="checkbox"]');
+            const search = fieldset.querySelector('[type="search"]');
+            const select = fieldset.querySelector('select');
+            let offset = 0;
+            let requestNumber = 0;
+            let timer;
+            async function loadPage() {
+                const number = ++requestNumber;
+                const params = new URLSearchParams({scanner, search: search.value, offset, limit: 100});
+                try {
+                    const result = await requestJson(`/api/scanner-nodes/${encodeURIComponent(nodeId)}/profiles?${params}`);
+                    if (number !== requestNumber || !fieldset.isConnected || container.dataset.nodeId !== nodeId || state.orgDb !== orgDb) return;
+                    const selected = select.selectedOptions[0];
+                    const retained = selected?.value && !result.items.some(item => item.id === selected.value) ? selected.cloneNode(true) : null;
+                    const value = select.value;
+                    select.innerHTML = '<option value="">Choose a profile</option>';
+                    if (retained) select.appendChild(retained);
+                    result.items.forEach(item => select.add(new Option(item.name, item.id)));
+                    select.value = value;
+                    fieldset.querySelector('.profile-count').textContent = `${result.total ? offset + 1 : 0}–${Math.min(offset + 100, result.total)} of ${result.total}`;
+                    fieldset.querySelector('.profile-previous').disabled = offset === 0;
+                    fieldset.querySelector('.profile-next').disabled = offset + 100 >= result.total;
+                    fieldset.querySelector('.profile-error').textContent = '';
+                } catch (error) {
+                    if (number === requestNumber && fieldset.isConnected) fieldset.querySelector('.profile-error').textContent = error.message;
+                }
+            }
+            checkbox.addEventListener('change', () => {
+                fieldset.querySelector('.profile-controls').classList.toggle('hidden', !checkbox.checked);
+                if (checkbox.checked) {
+                    document.getElementById('modeInput').value = '';
+                    document.getElementById('scannerInput').value = '';
+                    loadPage();
+                }
+            });
+            search.addEventListener('input', () => {
+                clearTimeout(timer);
+                ++requestNumber;
+                timer = setTimeout(() => { offset = 0; loadPage(); }, 250);
+            });
+            fieldset.querySelector('.profile-previous').addEventListener('click', () => { offset = Math.max(0, offset - 100); loadPage(); });
+            fieldset.querySelector('.profile-next').addEventListener('click', () => { offset += 100; loadPage(); });
+        });
+    } catch (error) {
+        if (container.dataset.nodeId === nodeId) {
+            container.textContent = error.message;
+            delete container.dataset.nodeId;
+        }
+    }
 }
 
 function formatIntervalMinutes(minutes) {
@@ -296,6 +394,7 @@ function formatScanMode(mode) {
         "2": "Normal",
         "3": "Aggressive",
         "4": "Attack Surface",
+        selection: "Selected scanners",
         bbot_passive: "BBot passive",
         bbot_normal: "BBot normal",
         bbot_aggressive: "BBot aggressive",
@@ -1112,6 +1211,10 @@ async function openScanDetail(scanId) {
                 ${detailField("Stop Requested", formatDateTime(scan.requested_stop_at))}
                 ${detailField("Error", scan.error_message || "-")}
             </div>
+            ${(result.components || []).length ? `<section class="detail-section"><h4>Scanners</h4><table>
+                <thead><tr><th>Scanner</th><th>Profile</th><th>Status</th><th>Error</th></tr></thead>
+                <tbody>${result.components.map(item => `<tr><td>${escapeHtml(item.scanner)}</td><td>${escapeHtml(item.profile_name)}</td><td>${statusBadge(item.status)}</td><td>${escapeHtml(item.error_message || '-')}</td></tr>`).join('')}</tbody>
+            </table></section>` : ''}
             <section class="detail-section">
                 <div class="detail-section-header">
                     <h4>Execution Log</h4>
@@ -2969,9 +3072,14 @@ document.getElementById("scanForm").addEventListener("submit", async (event) => 
     const scanName = document.getElementById("scanNameInput").value.trim();
     const bruteforce = document.getElementById("bruteforceInput").checked;
     const recurring = document.getElementById("recurringScanInput").checked;
+    const selections = selectedScanners();
+    if (selections.some(item => !item.profile_id)) {
+        scanMessage.textContent = "Choose a profile for each selected scanner.";
+        return;
+    }
 
-    if (!mode && !scanner) {
-        scanMessage.textContent = "Select either a scan mode or an individual scanner.";
+    if (!mode && !scanner && !selections.length) {
+        scanMessage.textContent = "Select a scan mode, an individual scanner, or scanners with profiles.";
         return;
     }
 
@@ -2988,6 +3096,7 @@ document.getElementById("scanForm").addEventListener("submit", async (event) => 
                     targets,
                     mode: mode ? Number(mode) : null,
                     scanner: scanner || null,
+                    ...(selections.length ? {selections} : {}),
                     preferred_node_id: preferredNodeId,
                     scan_name: scanName || null,
                     bruteforce,
@@ -3008,6 +3117,7 @@ document.getElementById("scanForm").addEventListener("submit", async (event) => 
                 targets,
                 mode: mode ? Number(mode) : null,
                 scanner: scanner || null,
+                ...(selections.length ? {selections} : {}),
                 preferred_node_id: preferredNodeId,
                 scan_name: scanName || null,
                 bruteforce,
@@ -3026,15 +3136,19 @@ document.getElementById("scanForm").addEventListener("submit", async (event) => 
     }
 });
 
-// Mode/scanner are mutually exclusive in backend contract.
+document.getElementById("applianceInput").addEventListener("change", loadScannerProfiles);
+
+// Mode, individual scanner, and profile selections are mutually exclusive.
 document.getElementById("modeInput").addEventListener("change", (e) => {
     if (e.target.value) {
+        clearScannerSelections();
         document.getElementById("scannerInput").value = "";
     }
 });
 
 document.getElementById("scannerInput").addEventListener("change", (e) => {
     if (e.target.value) {
+        clearScannerSelections();
         document.getElementById("modeInput").value = "";
     }
 });

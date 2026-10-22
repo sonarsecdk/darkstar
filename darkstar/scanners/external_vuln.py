@@ -17,7 +17,10 @@ import socket
 import subprocess
 import tempfile
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
+import xml.etree.ElementTree as ET
+
+from darkstar.scanner_profiles import profile_file, zap_policy_directory
 
 from core.db_helper import insert_vulnerability_to_database
 from core.models.vulnerability import Vulnerability
@@ -125,18 +128,15 @@ class NiktoScanner:
                 timeout=240,
             )
             if result.returncode not in (0, 1):
-                logger.warning("Nikto exited with code %d: %s", result.returncode, result.stderr[:500])
+                raise RuntimeError(f"Nikto exited with code {result.returncode}: {result.stderr[:500]}")
         except subprocess.TimeoutExpired:
-            logger.warning("Nikto timed out for %s", host)
-            return []
+            raise RuntimeError(f"Nikto timed out for {host}")
         except FileNotFoundError:
-            logger.error("Nikto not found – install it with: apt-get install nikto")
-            return []
+            raise RuntimeError("Nikto is not installed")
 
         findings: list[dict] = []
         if not os.path.exists(out_path):
-            logger.warning("Nikto produced no output file for %s", host)
-            return findings
+            raise RuntimeError(f"Nikto produced no report for {host}")
 
         try:
             with open(out_path) as f:
@@ -257,14 +257,12 @@ class WapitiScanner:
                     timeout=360,
                 )
             except subprocess.TimeoutExpired:
-                logger.warning("Wapiti timed out for %s", url)
+                raise RuntimeError(f"Wapiti timed out for {url}")
             except FileNotFoundError:
-                logger.error("Wapiti not found – install it with: pip3 install wapiti3")
-                return []
+                raise RuntimeError("Wapiti is not installed")
 
             if not os.path.exists(out_path):
-                logger.warning("Wapiti produced no JSON output for %s", url)
-                return []
+                raise RuntimeError(f"Wapiti produced no report for {url}")
 
             findings: list[dict] = []
             try:
@@ -353,9 +351,11 @@ class ZAPScanner:
     TOOL = "zap"
     API_KEY = "darkstar-zap-key"
 
-    def __init__(self, targets: str, org_name: str):
+    def __init__(self, targets: str, org_name: str, profile: str | None = None):
         self.targets = [t.strip() for t in targets.split(",") if t.strip()]
         self.org_name = org_name
+        self.profile = profile
+        self.policy_name = None
         self._port = self._free_port()
         self._zap_process: subprocess.Popen | None = None
 
@@ -472,9 +472,9 @@ class ZAPScanner:
 
         # Spider the target
         logger.info("ZAP: spidering %s", url)
-        resp = self._zap_api(f"JSON/spider/action/scan/?url={url}&maxChildren=20&contextName=")
-        if not resp:
-            return findings
+        resp = self._zap_api("JSON/spider/action/scan/?" + urlencode({"url": url, "maxChildren": 20}))
+        if not resp or "scan" not in resp:
+            raise RuntimeError("ZAP could not start the spider")
         scan_id = resp.get("scan", "0")
 
         # Wait for spider to complete
@@ -484,6 +484,23 @@ class ZAPScanner:
             if prog and int(prog.get("status", 0)) >= 100:
                 break
             time.sleep(3)
+        else:
+            raise RuntimeError("ZAP spider did not finish within five minutes")
+
+        if self.policy_name:
+            response = self._zap_api("JSON/ascan/action/scan/?" + urlencode({
+                "url": url, "recurse": "true", "scanPolicyName": self.policy_name,
+            }))
+            if not response or "scan" not in response:
+                raise RuntimeError("ZAP could not start the selected active policy")
+            deadline = time.time() + 3600
+            while time.time() < deadline:
+                progress = self._zap_api("JSON/ascan/view/status/?" + urlencode({"scanId": response["scan"]}))
+                if progress and int(progress.get("status", 0)) >= 100:
+                    break
+                time.sleep(3)
+            else:
+                raise RuntimeError("ZAP active scan did not finish within one hour")
 
         # Wait for passive scan queue to drain
         deadline = time.time() + 240
@@ -492,10 +509,14 @@ class ZAPScanner:
             if queue and int(queue.get("recordsToScan", 1)) == 0:
                 break
             time.sleep(2)
+        else:
+            raise RuntimeError("ZAP passive scan did not finish within four minutes")
 
         # Retrieve alerts
-        alerts_resp = self._zap_api(f"JSON/core/view/alerts/?baseurl={url}&start=0&count=500")
-        alerts = (alerts_resp or {}).get("alerts") or []
+        alerts_resp = self._zap_api("JSON/core/view/alerts/?" + urlencode({"baseurl": url, "start": 0, "count": 500}))
+        if not alerts_resp or "alerts" not in alerts_resp:
+            raise RuntimeError("ZAP could not retrieve its report")
+        alerts = alerts_resp["alerts"]
 
         for alert in alerts:
             risk = alert.get("riskcode", "1")
@@ -524,11 +545,17 @@ class ZAPScanner:
     def run(self) -> None:
         """Start ZAP, scan all targets, persist findings, shut down ZAP."""
         if not self._start_daemon():
-            logger.error("ZAP scanner could not be started; skipping.")
-            return
+            self._stop_daemon()
+            raise RuntimeError("ZAP scanner could not be started")
 
         total = 0
         try:
+            if self.profile and self.profile != "default":
+                path = profile_file(zap_policy_directory(), self.profile, {".policy"})
+                self.policy_name = ET.parse(path).getroot().findtext("policy") or path.stem
+                result = self._zap_api("JSON/ascan/action/importScanPolicy/?" + urlencode({"path": str(path)}))
+                if not result or result.get("Result") != "OK":
+                    raise RuntimeError("ZAP could not import the selected policy")
             for target in self.targets:
                 findings = self._scan_target(target)
                 for f in findings:
@@ -613,8 +640,7 @@ class DalfoxScanner:
     def _scan_target(self, target: str) -> list[dict]:
         binary = self._binary()
         if not binary:
-            logger.error("Dalfox not found. Install it with: go install github.com/hahwul/dalfox/v2@latest")
-            return []
+            raise RuntimeError("Dalfox is not installed")
 
         url = _ensure_scheme(target)
         hostname = _parse_host(url)
@@ -641,12 +667,11 @@ class DalfoxScanner:
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             if result.returncode not in (0, 1):
-                logger.warning("Dalfox exited with code %d: %s", result.returncode, result.stderr[:500])
+                raise RuntimeError(f"Dalfox exited with code {result.returncode}: {result.stderr[:500]}")
         except subprocess.TimeoutExpired:
-            logger.warning("Dalfox timed out after 120 seconds for %s; importing any partial report", url)
+            raise RuntimeError(f"Dalfox timed out for {url}")
         except FileNotFoundError:
-            logger.error("Dalfox binary disappeared before execution")
-            return []
+            raise RuntimeError("Dalfox binary disappeared before execution")
 
         raw_findings = self._load_report(out_path)
         try:
@@ -753,10 +778,7 @@ class TestSSLScanner:
         """Run testssl.sh against one target and return finding dicts."""
         binary = self._testssl_binary()
         if not binary:
-            logger.error(
-                "testssl.sh not found. Install it: git clone https://github.com/drwetter/testssl.sh /opt/testssl"
-            )
-            return []
+            raise RuntimeError("testssl.sh is not installed")
 
         normalized = self._build_target(target)
         hostname = normalized.split(":")[0]
@@ -781,10 +803,9 @@ class TestSSLScanner:
                 timeout=300,
             )
         except subprocess.TimeoutExpired:
-            logger.warning("testssl.sh timed out for %s", normalized)
+            raise RuntimeError(f"testssl.sh timed out for {normalized}")
         except FileNotFoundError:
-            logger.error("testssl.sh script not executable or bash not available")
-            return []
+            raise RuntimeError("testssl.sh script is not executable or bash is unavailable")
 
         findings: list[dict] = []
         if not os.path.exists(out_path):
@@ -875,9 +896,10 @@ class ExternalVulnerabilityScanner:
     Used by darkstar.main.worker.run_external_vulnerability_scanner().
     """
 
-    def __init__(self, targets: str, org_name: str):
+    def __init__(self, targets: str, org_name: str, profile: str | None = None):
         self.targets = targets
         self.org_name = org_name
+        self.profile = profile
 
     def run_nikto(self) -> None:
         NiktoScanner(self.targets, self.org_name).run()
@@ -886,7 +908,7 @@ class ExternalVulnerabilityScanner:
         WapitiScanner(self.targets, self.org_name).run()
 
     def run_zap(self) -> None:
-        ZAPScanner(self.targets, self.org_name).run()
+        ZAPScanner(self.targets, self.org_name, **({"profile": self.profile} if self.profile else {})).run()
 
     def run_dalfox(self) -> None:
         DalfoxScanner(self.targets, self.org_name).run()

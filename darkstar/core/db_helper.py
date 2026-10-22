@@ -137,6 +137,20 @@ ORG_SCHEMA_STATEMENTS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS scan_components (
+        scan_id INT NOT NULL,
+        scanner VARCHAR(100) NOT NULL,
+        profile_id VARCHAR(1024) NOT NULL,
+        profile_name VARCHAR(1024) NOT NULL,
+        status VARCHAR(32) NOT NULL DEFAULT 'queued',
+        error_message TEXT DEFAULT NULL,
+        started_at DATETIME DEFAULT NULL,
+        finished_at DATETIME DEFAULT NULL,
+        PRIMARY KEY (scan_id, scanner),
+        FOREIGN KEY (scan_id) REFERENCES scans(id) ON DELETE CASCADE
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS scan_schedules (
         id INT AUTO_INCREMENT PRIMARY KEY,
         scan_name VARCHAR(255) NOT NULL,
@@ -419,6 +433,7 @@ ORG_SCHEMA_MIGRATION_STATEMENTS = [
     "ALTER TABLE scan_schedules ADD COLUMN IF NOT EXISTS start_at DATETIME DEFAULT NULL",
     "ALTER TABLE scan_schedules ADD COLUMN IF NOT EXISTS end_at DATETIME DEFAULT NULL",
     "ALTER TABLE scan_schedules ADD COLUMN IF NOT EXISTS preferred_node_id VARCHAR(64) DEFAULT NULL",
+    "ALTER TABLE scan_schedules ADD COLUMN IF NOT EXISTS selections_json LONGTEXT DEFAULT NULL",
     "ALTER TABLE endpoint_agents ADD COLUMN IF NOT EXISTS display_name VARCHAR(255) DEFAULT NULL",
     "ALTER TABLE endpoint_agents ADD COLUMN IF NOT EXISTS os_build VARCHAR(128) DEFAULT NULL",
     "ALTER TABLE endpoint_agents ADD COLUMN IF NOT EXISTS metadata_json LONGTEXT DEFAULT NULL",
@@ -595,6 +610,8 @@ def _ensure_organizations_registry(cursor):
     cursor.execute("ALTER TABLE scanner_nodes ADD COLUMN IF NOT EXISTS max_parallel_jobs INT NOT NULL DEFAULT 1")
     cursor.execute("ALTER TABLE scanner_nodes ADD COLUMN IF NOT EXISTS status VARCHAR(32) NOT NULL DEFAULT 'registered'")
     cursor.execute("ALTER TABLE scanner_nodes ADD COLUMN IF NOT EXISTS revoked_at DATETIME DEFAULT NULL")
+    cursor.execute("ALTER TABLE scanner_nodes ADD COLUMN IF NOT EXISTS profiles_json LONGTEXT DEFAULT NULL")
+    cursor.execute("ALTER TABLE scanner_nodes ADD COLUMN IF NOT EXISTS profiles_updated_at DATETIME DEFAULT NULL")
     cursor.execute("ALTER TABLE scanner_jobs ADD COLUMN IF NOT EXISTS scanner VARCHAR(100) DEFAULT NULL")
     cursor.execute("ALTER TABLE scanner_jobs ADD COLUMN IF NOT EXISTS preferred_node_id VARCHAR(64) DEFAULT NULL")
     cursor.execute("ALTER TABLE scanner_jobs ADD COLUMN IF NOT EXISTS priority INT NOT NULL DEFAULT 100")
@@ -1436,6 +1453,12 @@ def update_scan_status(org_name: str, scan_id: int, status: str, error_message: 
                 (status, error_message, scan_id),
             )
 
+        if status in {"completed", "failed", "stopped"}:
+            cursor.execute(
+                """UPDATE scan_components SET status = %s, error_message = %s, finished_at = UTC_TIMESTAMP()
+                   WHERE scan_id = %s AND status IN ('queued', 'running')""",
+                ("stopped" if status == "stopped" else "failed", error_message or "Scanner did not finish", scan_id),
+            )
         connection.commit()
         cursor.close()
 
@@ -3436,6 +3459,7 @@ def create_scan_schedule(
     start_at=None,
     end_at=None,
     preferred_node_id: str | None = None,
+    selections: list[dict] | None = None,
 ) -> int:
     """Create a periodic scan schedule."""
     now = datetime.utcnow()
@@ -3452,8 +3476,8 @@ def create_scan_schedule(
             """
             INSERT INTO scan_schedules (
                 scan_name, scan_mode, scanner, targets, bruteforce, bruteforce_timeout, preferred_node_id,
-                interval_minutes, enabled, start_at, end_at, next_run_at, created_at, updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s, %s, %s, %s, %s)
+                interval_minutes, enabled, start_at, end_at, next_run_at, created_at, updated_at, selections_json
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s, %s, %s, %s, %s, %s)
             """,
             (
                 scan_name,
@@ -3469,6 +3493,7 @@ def create_scan_schedule(
                 next_run_at.strftime("%Y-%m-%d %H:%M:%S"),
                 now.strftime("%Y-%m-%d %H:%M:%S"),
                 now.strftime("%Y-%m-%d %H:%M:%S"),
+                json.dumps(selections) if selections else None,
             ),
         )
         schedule_id = cursor.lastrowid
@@ -3486,7 +3511,7 @@ def get_scan_schedules(org_name: str) -> list[dict]:
             """
             SELECT id, scan_name, scan_mode, scanner, targets, bruteforce,
                    bruteforce_timeout, preferred_node_id, interval_minutes, enabled, start_at, end_at, next_run_at,
-                   last_run_at, created_at, updated_at
+                   last_run_at, created_at, updated_at, selections_json
             FROM scan_schedules
             ORDER BY next_run_at ASC
             """
@@ -3505,7 +3530,7 @@ def get_scan_schedule(org_name: str, schedule_id: int) -> dict | None:
             """
             SELECT id, scan_name, scan_mode, scanner, targets, bruteforce,
                    bruteforce_timeout, preferred_node_id, interval_minutes, enabled, start_at, end_at, next_run_at,
-                   last_run_at, created_at, updated_at
+                   last_run_at, created_at, updated_at, selections_json
             FROM scan_schedules
             WHERE id = %s
             """,
@@ -3586,7 +3611,7 @@ def get_due_scan_schedules(org_name: str) -> list[dict]:
         cursor.execute(
             """
             SELECT id, scan_name, scan_mode, scanner, targets, bruteforce,
-                   bruteforce_timeout, preferred_node_id, interval_minutes, enabled, start_at, end_at, next_run_at
+                   bruteforce_timeout, preferred_node_id, interval_minutes, enabled, start_at, end_at, next_run_at, selections_json
             FROM scan_schedules
             WHERE enabled = TRUE
               AND next_run_at <= %s
@@ -5461,6 +5486,73 @@ def get_scanner_node_record(node_id: str) -> dict | None:
     if row:
         row["capabilities"] = _normalize_capabilities(row.get("capabilities"))
     return row
+
+
+def update_scanner_profiles(node_id: str, profiles: list[dict]) -> None:
+    """Store the installed profile catalog reported by an authenticated worker."""
+    with DatabaseConnectionManager() as connection:
+        cursor = connection.cursor()
+        _ensure_organizations_registry(cursor)
+        cursor.execute(
+            "UPDATE scanner_nodes SET profiles_json = %s, profiles_updated_at = UTC_TIMESTAMP() WHERE node_id = %s AND revoked_at IS NULL",
+            (json.dumps(profiles), node_id),
+        )
+        connection.commit()
+        cursor.close()
+
+
+def get_scanner_profiles(node_id: str) -> dict:
+    with DatabaseConnectionManager() as connection:
+        cursor = connection.cursor(dictionary=True)
+        _ensure_organizations_registry(cursor)
+        cursor.execute(
+            "SELECT profiles_json, profiles_updated_at FROM scanner_nodes WHERE node_id = %s AND revoked_at IS NULL",
+            (node_id,),
+        )
+        row = cursor.fetchone() or {}
+        cursor.close()
+    return {"items": json.loads(row.get("profiles_json") or "[]"), "updated_at": row.get("profiles_updated_at")}
+
+
+def create_scan_components(org_name: str, scan_id: int, selections: list[dict]) -> None:
+    with DatabaseConnectionManager() as connection:
+        cursor = connection.cursor()
+        _use_org_database(cursor, org_name)
+        cursor.executemany(
+            "INSERT INTO scan_components (scan_id, scanner, profile_id, profile_name) VALUES (%s, %s, %s, %s)",
+            [(scan_id, item["scanner"], item["profile_id"], item["profile_name"]) for item in selections],
+        )
+        connection.commit()
+        cursor.close()
+
+
+def get_scan_components(org_name: str, scan_id: int) -> list[dict]:
+    with DatabaseConnectionManager() as connection:
+        cursor = connection.cursor(dictionary=True)
+        _use_org_database(cursor, org_name)
+        cursor.execute("SELECT * FROM scan_components WHERE scan_id = %s ORDER BY scanner", (scan_id,))
+        rows = cursor.fetchall() or []
+        cursor.close()
+    return rows
+
+
+def update_scan_component(org_name: str, scan_id: int, scanner: str, status: str, error_message: str | None = None) -> bool:
+    if status not in {"running", "completed", "failed", "stopped"}:
+        raise ValueError("Invalid scanner status")
+    with DatabaseConnectionManager() as connection:
+        cursor = connection.cursor()
+        _use_org_database(cursor, org_name)
+        cursor.execute(
+            """UPDATE scan_components SET status = %s, error_message = %s,
+               started_at = CASE WHEN %s = 'running' THEN UTC_TIMESTAMP() ELSE started_at END,
+               finished_at = CASE WHEN %s = 'running' THEN NULL ELSE UTC_TIMESTAMP() END
+               WHERE scan_id = %s AND scanner = %s""",
+            (status, error_message, status, status, scan_id, scanner),
+        )
+        changed = cursor.rowcount > 0
+        connection.commit()
+        cursor.close()
+    return changed
 
 
 def revoke_scanner_node(node_id: str) -> bool:

@@ -720,7 +720,7 @@
                                     </optgroup>
                                 </select>
                             </div>
-                            <p class="form-message" id="scanModeHint">Choose either a mode or an individual scanner.</p>
+                            <p class="form-message" id="scanModeHint">Choose a mode, one scanner, or select multiple scanners below.</p>
                             <div class="form-group">
                                 <label for="applianceInput">Scanner appliance</label>
                                 <select id="applianceInput" name="preferred_node_id" class="filter-select">
@@ -728,6 +728,11 @@
                                 </select>
                                 <small class="field-hint">Auto lets Darkstar pick any online scanner. Choose an appliance to run from that network location.</small>
                             </div>
+                            <fieldset class="form-group">
+                                <legend>Scanners and profiles</legend>
+                                <p class="field-hint">Choose an appliance to browse its installed profiles. Selected scanners run in order; a failure does not stop the others.</p>
+                                <div id="scannerSelections">Choose an appliance first.</div>
+                            </fieldset>
                             <div class="form-group">
                                 <label>
                                     <input id="bruteforceInput" name="bruteforce" type="checkbox" />
@@ -1216,6 +1221,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=20261022-risk"></script>
+    <script src="/static/js/app.js?v=20261022-profiles"></script>
 </body>
 </html>

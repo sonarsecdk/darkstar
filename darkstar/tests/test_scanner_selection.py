@@ -59,6 +59,39 @@ def test_unavailable_openvas_does_not_advertise_profiles(monkeypatch):
     assert profiles.discover_scanner_profiles() == []
 
 
+def test_large_installed_catalog_keeps_openvas_profiles():
+    templates = [{"scanner": "nuclei", "id": f"http/template-{i}.yaml", "name": f"Template {i}"} for i in range(100000)]
+    catalog = webapp.ScannerCatalogRequest(items=templates + CATALOG)
+    assert len(catalog.items) == 100002
+    assert catalog.items[-2].scanner == "openvas"
+    assert catalog.items[-2].id == "config-network"
+
+
+def test_catalog_failure_does_not_block_claims_and_retries_later(monkeypatch):
+    worker = scanner_worker.ScannerWorker("http://orchestrator.test", "test-token", "test", ["*"])
+    discover = Mock(return_value=CATALOG)
+    monkeypatch.setattr(scanner_worker, "discover_scanner_profiles", discover)
+    clock = Mock(return_value=1000)
+    monkeypatch.setattr(scanner_worker.time, "monotonic", clock)
+    monkeypatch.setattr(scanner_worker.time, "sleep", lambda seconds: None)
+    worker.heartbeat = Mock()
+    worker._api = Mock(side_effect=requests.HTTPError("Catalog rejected"))
+    def claim():
+        worker.stop_event.set()
+        return None
+    worker.claim = Mock(side_effect=claim)
+    worker.run_forever()
+    worker.claim.assert_called_once()
+    worker._api.assert_called_once()
+    clock.return_value = 1299
+    worker.report_profiles()
+    assert discover.call_count == 1
+    clock.return_value = 1300
+    worker._api.side_effect = None
+    worker.report_profiles()
+    assert discover.call_count == 2
+
+
 @pytest.mark.parametrize("changes,message", [
     ({"preferred_node_id": None}, "Choose an appliance"),
     ({"mode": 2}, "Choose one"),

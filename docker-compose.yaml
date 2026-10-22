@@ -5,7 +5,7 @@ services:
     container_name: mariadb
     profiles: ["core", "gvm", "darkstar", "scanner"]
     entrypoint: ["/bin/bash", "/usr/local/bin/darkstar-mariadb-entrypoint.sh"]
-    command: ["mysqld"]
+    command: ["mysqld", "--max-allowed-packet=64M"]
     env_file:
       - .env
     environment:

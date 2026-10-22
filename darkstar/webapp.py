@@ -408,7 +408,7 @@ class ScannerProfile(BaseModel):
 
 
 class ScannerCatalogRequest(BaseModel):
-    items: list[ScannerProfile] = Field(max_length=50000)
+    items: list[ScannerProfile] = Field(max_length=200000)
 
 
 class ScannerClaimRequest(BaseModel):

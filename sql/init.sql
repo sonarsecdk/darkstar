@@ -427,6 +427,7 @@ CREATE TABLE IF NOT EXISTS users (
     id INT AUTO_INCREMENT PRIMARY KEY,
     email VARCHAR(255) NOT NULL UNIQUE,
     display_name VARCHAR(255) DEFAULT NULL,
+    theme VARCHAR(32) NOT NULL DEFAULT 'darkstar',
     password_salt VARCHAR(64) NOT NULL,
     password_hash VARCHAR(128) NOT NULL,
     mfa_secret VARCHAR(64) DEFAULT NULL,

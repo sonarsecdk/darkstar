@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="{{ theme }}">
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,7 +7,8 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/static/css/app.css?v=20260514-network-map" />
+    <link rel="stylesheet" href="/static/css/app.css?v=20261012-themes" />
+    <link rel="stylesheet" href="/static/css/themes.css?v=20261012" />
 </head>
 <body data-authenticated="{{ 'true' if logged_in else 'false' }}" data-organization="{{ organization }}" data-role="{{ role }}">
     <!-- Login Screen -->
@@ -801,6 +802,60 @@
 
             <!-- Settings Tab -->
             <div id="settings-tab" class="tab-panel">
+                <div class="card appearance-card">
+                    <div class="card-header">Appearance</div>
+                    <p class="appearance-intro">Make yourself at home. Your theme follows your account across organizations and devices.</p>
+                    <fieldset id="themeChoices" class="theme-choices" aria-describedby="themeMessage">
+                        <legend>Choose your theme</legend>
+                            <label class="theme-option">
+                                <input type="radio" name="theme" value="darkstar" aria-label="Darkstar" disabled />
+                                <span class="theme-preview" data-preview="darkstar" aria-hidden="true">
+                                    <span class="preview-nav"></span><span class="preview-hero"></span>
+                                    <span class="preview-card"></span><span class="preview-card"></span>
+                                </span>
+                                <span class="theme-option-title">Darkstar<span class="theme-kind">Original</span></span>
+                                <span class="theme-description">The original emerald command center.</span>
+                            </label>
+                            <label class="theme-option">
+                                <input type="radio" name="theme" value="midnight" aria-label="Midnight" disabled />
+                                <span class="theme-preview" data-preview="midnight" aria-hidden="true">
+                                    <span class="preview-nav"></span><span class="preview-hero"></span>
+                                    <span class="preview-card"></span><span class="preview-card"></span>
+                                </span>
+                                <span class="theme-option-title">Midnight<span class="theme-kind">Dark</span></span>
+                                <span class="theme-description">Deep navy. Crisp blue. Built for focus.</span>
+                            </label>
+                            <label class="theme-option">
+                                <input type="radio" name="theme" value="daylight" aria-label="Daylight" disabled />
+                                <span class="theme-preview" data-preview="daylight" aria-hidden="true">
+                                    <span class="preview-nav"></span><span class="preview-hero"></span>
+                                    <span class="preview-card"></span><span class="preview-card"></span>
+                                </span>
+                                <span class="theme-option-title">Daylight<span class="theme-kind">Light</span></span>
+                                <span class="theme-description">A bright, uncluttered workspace.</span>
+                            </label>
+                            <label class="theme-option">
+                                <input type="radio" name="theme" value="aurora" aria-label="Aurora" disabled />
+                                <span class="theme-preview" data-preview="aurora" aria-hidden="true">
+                                    <span class="preview-nav"></span><span class="preview-hero"></span>
+                                    <span class="preview-card"></span><span class="preview-card"></span>
+                                </span>
+                                <span class="theme-option-title">Aurora<span class="theme-kind">Dark</span></span>
+                                <span class="theme-description">Violet accents on a quiet charcoal canvas.</span>
+                            </label>
+                            <label class="theme-option">
+                                <input type="radio" name="theme" value="sandstone" aria-label="Sandstone" disabled />
+                                <span class="theme-preview" data-preview="sandstone" aria-hidden="true">
+                                    <span class="preview-nav"></span><span class="preview-hero"></span>
+                                    <span class="preview-card"></span><span class="preview-card"></span>
+                                </span>
+                                <span class="theme-option-title">Sandstone<span class="theme-kind">Light</span></span>
+                                <span class="theme-description">Warm neutrals with a terracotta accent.</span>
+                            </label>
+                    </fieldset>
+                    <p id="themeMessage" class="form-message" role="status" aria-live="polite">Sign in with a personal account to save a theme.</p>
+                </div>
+
                 <div class="card tenant-admin-only hidden settings-users-card">
                     <div class="card-header">Users & Roles</div>
                     <div class="filter-grid">
@@ -1136,6 +1191,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=20260514-network-map"></script>
+    <script src="/static/js/app.js?v=20261012-themes"></script>
 </body>
 </html>

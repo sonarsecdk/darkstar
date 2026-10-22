@@ -8,6 +8,8 @@ const state = {
     orgDb: document.body.dataset.orgDb || "",
     role: document.body.dataset.role || "",
     organizations: [],
+    themeVersion: 0,
+    themeSaving: false,
     currentTab: "dashboard",
     vulnFilters: {
         severity: "",
@@ -100,6 +102,33 @@ function escapeHtml(value) {
     const div = document.createElement("div");
     div.textContent = value == null ? "" : String(value);
     return div.innerHTML;
+}
+
+function themeColor(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function applyTheme(theme) {
+    const choices = [...document.querySelectorAll('input[name="theme"]')];
+    const selected = choices.some(input => input.value === theme) ? theme : "darkstar";
+    const changed = document.documentElement.dataset.theme !== selected;
+    document.documentElement.dataset.theme = selected;
+    choices.forEach(input => { input.checked = input.value === selected; });
+    Object.keys(severityPalette).forEach(severity => {
+        severityPalette[severity] = themeColor(`--sev-${severity}`);
+    });
+    if (changed) redrawCharts();
+}
+
+function updateAppearance(user) {
+    document.querySelectorAll('input[name="theme"]').forEach(input => {
+        input.disabled = !user || state.themeSaving;
+    });
+    if (state.themeSaving) return;
+    applyTheme(user?.theme || "darkstar");
+    document.getElementById("themeMessage").textContent = user
+        ? "Saved to your account. Changes apply immediately."
+        : "Sign in with a personal account to save a theme.";
 }
 
 function severityClass(value) {
@@ -316,13 +345,13 @@ function updatePager(prefix, page, total, limit) {
 }
 
 const severityPalette = {
-    critical: "#f05154",
-    high: "#ff7678",
-    medium: "#f49e31",
-    low: "#5fd0a5",
-    baseline: "#83d8ff",
-    info: "#83d8ff",
-    unknown: "#6f9087",
+    critical: "",
+    high: "",
+    medium: "",
+    low: "",
+    baseline: "",
+    info: "",
+    unknown: "",
 };
 
 const severityOrder = ["critical", "high", "medium", "low", "baseline", "info", "unknown"];
@@ -351,8 +380,8 @@ function drawSeverityCanvas(canvasId, breakdown, options = {}) {
     const total = entries.reduce((sum, [, count]) => sum + count, 0);
     const pad = 18;
 
-    ctx.fillStyle = "rgba(95, 208, 165, 0.05)";
-    ctx.strokeStyle = "rgba(95, 208, 165, 0.16)";
+    ctx.fillStyle = `rgba(${themeColor("--accent-rgb")}, 0.05)`;
+    ctx.strokeStyle = `rgba(${themeColor("--accent-rgb")}, 0.16)`;
     ctx.lineWidth = 1;
     for (let i = 0; i < 5; i += 1) {
         const y = pad + ((cssHeight - pad * 2) / 4) * i;
@@ -363,7 +392,7 @@ function drawSeverityCanvas(canvasId, breakdown, options = {}) {
     }
 
     if (!total) {
-        ctx.fillStyle = "rgba(238, 252, 247, 0.58)";
+        ctx.fillStyle = themeColor("--color-text-secondary");
         ctx.font = "600 13px Inter, system-ui, sans-serif";
         ctx.fillText("No vulnerability data yet", pad, cssHeight / 2);
         return;
@@ -385,12 +414,12 @@ function drawSeverityCanvas(canvasId, breakdown, options = {}) {
         start += angle;
     });
 
-    ctx.fillStyle = "#eefcf7";
+    ctx.fillStyle = themeColor("--color-text-primary");
     ctx.font = options.compact ? "700 24px Inter, system-ui, sans-serif" : "700 32px Inter, system-ui, sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(String(total), donutX, donutY - 4);
-    ctx.fillStyle = "rgba(168, 199, 189, 0.9)";
+    ctx.fillStyle = themeColor("--color-text-secondary");
     ctx.font = "600 11px Inter, system-ui, sans-serif";
     ctx.fillText("findings", donutX, donutY + (options.compact ? 18 : 24));
 
@@ -404,21 +433,23 @@ function drawSeverityCanvas(canvasId, breakdown, options = {}) {
     ctx.textBaseline = "middle";
     entries.forEach(([severity, count]) => {
         const width = Math.max(6, Math.round((count / maxCount) * barWidth));
-        ctx.fillStyle = "rgba(238, 252, 247, 0.52)";
+        ctx.fillStyle = themeColor("--color-text-secondary");
         ctx.font = "600 11px Inter, system-ui, sans-serif";
         ctx.fillText(severity.toUpperCase(), barStartX, y + barHeight / 2);
         const x = barStartX + 86;
         const available = Math.max(24, barWidth - 86);
-        ctx.fillStyle = "rgba(95, 208, 165, 0.08)";
+        ctx.fillStyle = `rgba(${themeColor("--accent-rgb")}, 0.08)`;
         ctx.fillRect(x, y, available, barHeight);
         ctx.fillStyle = severityPalette[severity] || severityPalette.unknown;
         ctx.fillRect(x, y, Math.min(available, width), barHeight);
-        ctx.fillStyle = "#eefcf7";
+        ctx.fillStyle = themeColor("--color-text-primary");
         ctx.font = "700 12px Inter, system-ui, sans-serif";
         const countText = String(count);
         const countWidth = ctx.measureText(countText).width;
         const countX = Math.min(x + Math.min(available, width) + 8, cssWidth - pad - countWidth);
-        ctx.fillText(countText, Math.max(x + 4, countX), y + barHeight / 2);
+        const textX = Math.max(x + 4, countX);
+        ctx.fillStyle = themeColor(textX < x + Math.min(available, width) ? "--button-text" : "--color-text-primary");
+        ctx.fillText(countText, textX, y + barHeight / 2);
         y += barHeight + barGap;
     });
 }
@@ -455,23 +486,22 @@ function renderEndpointCharts(overview = {}) {
     if (totalEl) totalEl.textContent = `${total} CVEs`;
 }
 
-const networkNodePalette = {
-    agent: "#83d8ff",
-    network: "#5fd0a5",
-    device: "#f49e31",
-    endpoint: "#83d8ff",
-    server: "#b6a6ff",
-    router: "#ffce73",
-    firewall: "#f05154",
-    phone: "#5fd0a5",
-    web_service: "#ffb36b",
-    unknown: "#6f9087",
-};
-
 function networkNodeColor(node) {
-    if (!node) return networkNodePalette.unknown;
-    if (node.type === "device") return networkNodePalette[node.device_type] || networkNodePalette.device;
-    return networkNodePalette[node.type] || networkNodePalette.unknown;
+    const colors = {
+        agent: "--color-info",
+        network: "--color-low",
+        device: "--color-medium",
+        endpoint: "--color-info",
+        server: "--chart-server",
+        router: "--chart-router",
+        firewall: "--color-critical",
+        phone: "--color-low",
+        web_service: "--chart-service",
+        unknown: "--color-text-muted",
+    };
+    const kind = node?.type === "device" ? node.device_type : node?.type;
+    const fallback = node?.type === "device" ? colors.device : colors.unknown;
+    return themeColor(colors[kind] || fallback);
 }
 
 function drawEndpointNetworkMap(map = {}) {
@@ -528,9 +558,9 @@ function drawEndpointNetworkMap(map = {}) {
     ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     ctx.clearRect(0, 0, cssWidth, cssHeight);
 
-    ctx.fillStyle = "rgba(5, 13, 16, 0.82)";
+    ctx.fillStyle = `rgba(${themeColor("--map-rgb")}, 0.82)`;
     ctx.fillRect(0, 0, cssWidth, cssHeight);
-    ctx.strokeStyle = "rgba(95, 208, 165, 0.08)";
+    ctx.strokeStyle = `rgba(${themeColor("--accent-rgb")}, 0.08)`;
     ctx.lineWidth = 1;
     for (let x = 24; x < cssWidth; x += 42) {
         ctx.beginPath();
@@ -546,7 +576,7 @@ function drawEndpointNetworkMap(map = {}) {
     }
 
     if (!nodes.length) {
-        ctx.fillStyle = "rgba(238, 252, 247, 0.58)";
+        ctx.fillStyle = themeColor("--color-text-secondary");
         ctx.font = "700 14px Inter, system-ui, sans-serif";
         ctx.fillText("No endpoint network probes reported yet", 24, cssHeight / 2);
         state.endpointNetworkMapHits = [];
@@ -559,7 +589,7 @@ function drawEndpointNetworkMap(map = {}) {
     const rowStartY = 82;
     let currentY = rowStartY;
 
-    ctx.fillStyle = "rgba(168, 199, 189, 0.84)";
+    ctx.fillStyle = themeColor("--color-text-secondary");
     ctx.font = "800 11px Inter, system-ui, sans-serif";
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
@@ -572,9 +602,9 @@ function drawEndpointNetworkMap(map = {}) {
         const rowY = currentY;
         const centerY = rowY + rowHeight / 2;
         positions[network.id] = { x: networkX, y: centerY, w: 190, h: 50 };
-        ctx.fillStyle = index % 2 === 0 ? "rgba(95, 208, 165, 0.035)" : "rgba(131, 216, 255, 0.025)";
+        ctx.fillStyle = index % 2 === 0 ? `rgba(${themeColor("--accent-rgb")}, 0.035)` : `rgba(${themeColor("--info-rgb")}, 0.025)`;
         ctx.fillRect(18, rowY, cssWidth - 36, rowHeight - 10);
-        ctx.strokeStyle = "rgba(95, 208, 165, 0.10)";
+        ctx.strokeStyle = `rgba(${themeColor("--accent-rgb")}, 0.10)`;
         ctx.strokeRect(18, rowY, cssWidth - 36, rowHeight - 10);
         currentY += rowHeight;
     });
@@ -624,10 +654,10 @@ function drawEndpointNetworkMap(map = {}) {
         ctx.moveTo(startX, source.y);
         ctx.bezierCurveTo(startX + curve, source.y, endX - curve, target.y, endX, target.y);
         ctx.strokeStyle = edge.type === "peer_unreachable"
-            ? "rgba(240, 81, 84, 0.38)"
+            ? `rgba(${themeColor("--danger-rgb")}, 0.38)`
             : edge.type === "peer_reachable"
-                ? "rgba(131, 216, 255, 0.58)"
-                : "rgba(95, 208, 165, 0.24)";
+                ? `rgba(${themeColor("--info-rgb")}, 0.58)`
+                : `rgba(${themeColor("--accent-rgb")}, 0.24)`;
         ctx.lineWidth = edge.type?.startsWith("peer_") ? 2 : 1.4;
         ctx.stroke();
     });
@@ -651,7 +681,7 @@ function drawEndpointNetworkMap(map = {}) {
         ctx.fillStyle = `${color}18`;
         ctx.fill();
         roundedRect(x, y, pos.w, pos.h, 9);
-        ctx.fillStyle = "rgba(6, 19, 16, 0.92)";
+        ctx.fillStyle = `rgba(${themeColor("--field-rgb")}, 0.92)`;
         ctx.fill();
         ctx.strokeStyle = color;
         ctx.lineWidth = 1.4;
@@ -668,10 +698,10 @@ function drawEndpointNetworkMap(map = {}) {
                 : String(node.device_type || "device");
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
-        ctx.fillStyle = "#eefcf7";
+        ctx.fillStyle = themeColor("--color-text-primary");
         ctx.font = node.type === "network" ? "800 12px Inter, system-ui, sans-serif" : "700 11px Inter, system-ui, sans-serif";
         ctx.fillText(shortLabel, x + 12, y + pos.h / 2 - 6);
-        ctx.fillStyle = "rgba(168, 199, 189, 0.86)";
+        ctx.fillStyle = themeColor("--color-text-secondary");
         ctx.font = "700 9px Inter, system-ui, sans-serif";
         ctx.fillText(subtitle.length > 20 ? `${subtitle.slice(0, 17)}...` : subtitle, x + 12, y + pos.h / 2 + 9);
     }
@@ -784,9 +814,9 @@ function drawScanActivityCanvas() {
     ctx.clearRect(0, 0, cssWidth, cssHeight);
 
     const values = [
-        { label: "Scans", value: Number(state.scanSummary.total || 0), color: "#83d8ff" },
-        { label: "Active", value: Number(state.scanSummary.active || 0), color: "#5fd0a5" },
-        { label: "Scheduled", value: Number(state.scanSummary.scheduled || 0), color: "#f49e31" },
+        { label: "Scans", value: Number(state.scanSummary.total || 0), color: themeColor("--color-info") },
+        { label: "Active", value: Number(state.scanSummary.active || 0), color: themeColor("--color-low") },
+        { label: "Scheduled", value: Number(state.scanSummary.scheduled || 0), color: themeColor("--color-medium") },
     ];
     const max = Math.max(...values.map(item => item.value), 1);
     const pad = 18;
@@ -796,7 +826,7 @@ function drawScanActivityCanvas() {
     const barWidth = cssWidth - pad * 2 - labelWidth - 34;
     let y = pad + 6;
 
-    ctx.strokeStyle = "rgba(95, 208, 165, 0.14)";
+    ctx.strokeStyle = `rgba(${themeColor("--accent-rgb")}, 0.14)`;
     ctx.lineWidth = 1;
     for (let i = 0; i < 4; i += 1) {
         const x = pad + labelWidth + (barWidth / 3) * i;
@@ -808,17 +838,17 @@ function drawScanActivityCanvas() {
 
     values.forEach(item => {
         const width = Math.max(5, (item.value / max) * barWidth);
-        ctx.fillStyle = "rgba(238, 252, 247, 0.64)";
+        ctx.fillStyle = themeColor("--color-text-secondary");
         ctx.font = "700 11px Inter, system-ui, sans-serif";
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
         ctx.fillText(item.label.toUpperCase(), pad, y + barHeight / 2);
         const x = pad + labelWidth;
-        ctx.fillStyle = "rgba(95, 208, 165, 0.08)";
+        ctx.fillStyle = `rgba(${themeColor("--accent-rgb")}, 0.08)`;
         ctx.fillRect(x, y, barWidth, barHeight);
         ctx.fillStyle = item.color;
         ctx.fillRect(x, y, width, barHeight);
-        ctx.fillStyle = "#eefcf7";
+        ctx.fillStyle = themeColor("--color-text-primary");
         ctx.font = "800 13px Inter, system-ui, sans-serif";
         ctx.fillText(String(item.value), x + Math.min(width + 8, barWidth + 8), y + barHeight / 2);
         y += barHeight + barGap;
@@ -830,11 +860,11 @@ function drawAttackSurfaceCanvas(summary = {}) {
     const legend = document.getElementById("asmExposureLegend");
     if (!canvas || !canvas.getContext) return;
     const values = [
-        { label: "Assets", value: Number(summary.asset_count || 0), color: "#83d8ff" },
-        { label: "Open Ports", value: Number(summary.exposed_ports || 0), color: "#f49e31" },
-        { label: "Services", value: Number(summary.service_count || 0), color: "#5fd0a5" },
-        { label: "Exploitable", value: Number(summary.exploitable_assets || 0), color: "#ff7678" },
-        { label: "Critical", value: Number(summary.critical_assets || 0), color: "#f05154" },
+        { label: "Assets", value: Number(summary.asset_count || 0), color: themeColor("--color-info") },
+        { label: "Open Ports", value: Number(summary.exposed_ports || 0), color: themeColor("--color-medium") },
+        { label: "Services", value: Number(summary.service_count || 0), color: themeColor("--color-low") },
+        { label: "Exploitable", value: Number(summary.exploitable_assets || 0), color: themeColor("--color-high") },
+        { label: "Critical", value: Number(summary.critical_assets || 0), color: themeColor("--color-critical") },
     ];
     const rect = canvas.getBoundingClientRect();
     const cssWidth = Math.max(300, Math.round(rect.width || canvas.width || 520));
@@ -853,15 +883,15 @@ function drawAttackSurfaceCanvas(summary = {}) {
         const height = Math.max(6, ((cssHeight - 58) * item.value) / max);
         const x = pad + index * barWidth + 8;
         const y = cssHeight - pad - height;
-        ctx.fillStyle = "rgba(95, 208, 165, 0.08)";
+        ctx.fillStyle = `rgba(${themeColor("--accent-rgb")}, 0.08)`;
         ctx.fillRect(x, pad, Math.max(18, barWidth - 16), cssHeight - pad * 2);
         ctx.fillStyle = item.color;
         ctx.fillRect(x, y, Math.max(18, barWidth - 16), height);
-        ctx.fillStyle = "#eefcf7";
+        ctx.fillStyle = themeColor("--color-text-primary");
         ctx.font = "800 13px Inter, system-ui, sans-serif";
         ctx.textAlign = "center";
         ctx.fillText(String(item.value), x + (barWidth - 16) / 2, y - 8);
-        ctx.fillStyle = "rgba(168, 199, 189, 0.92)";
+        ctx.fillStyle = themeColor("--color-text-secondary");
         ctx.font = "700 10px Inter, system-ui, sans-serif";
         ctx.fillText(item.label.toUpperCase(), x + (barWidth - 16) / 2, cssHeight - 5);
     });
@@ -1201,6 +1231,11 @@ function setAuthUI() {
     if (loginPanel) loginPanel.classList.toggle("hidden", state.authenticated);
     if (dashboardPanel) dashboardPanel.classList.toggle("hidden", !state.authenticated);
     if (logoutBtn) logoutBtn.classList.toggle("hidden", !state.authenticated);
+    if (!state.authenticated) {
+        state.themeVersion += 1;
+        state.themeSaving = false;
+        updateAppearance(null);
+    }
 }
 
 function roleRank(role) {
@@ -1249,6 +1284,9 @@ function renderTenantSwitch(me = {}) {
 
 async function completeAuth(result, messageText = "Ingelogd.") {
     state.authenticated = true;
+    state.themeVersion += 1;
+    state.themeSaving = false;
+    updateAppearance(result.user);
     state.organization = result.organization;
     state.orgDb = result.org_db;
     state.role = result.role || "viewer";
@@ -1416,6 +1454,8 @@ function renderScans(items) {
 
 async function refreshDashboard() {
     if (!state.authenticated) return;
+    // A refresh started before a save or login must not restore an old preference.
+    const themeVersion = state.themeVersion;
 
     try {
         const [me, stats, scans] = await Promise.all([
@@ -1424,6 +1464,9 @@ async function refreshDashboard() {
             requestJson("/api/scans?limit=50"),
         ]);
 
+        if (themeVersion === state.themeVersion && state.authenticated) {
+            updateAppearance(me.user);
+        }
         if (me.organization) {
             state.organization = me.organization;
             state.orgDb = me.org_db;
@@ -2630,6 +2673,39 @@ document.getElementById("tenantSwitchSelect").addEventListener("change", async (
     await switchTenant(event.target.value);
 });
 
+document.getElementById("themeChoices").addEventListener("change", async (event) => {
+    if (event.target.name !== "theme" || state.themeSaving) return;
+    const previous = document.documentElement.dataset.theme;
+    const restoreFocus = document.activeElement === event.target;
+    const version = ++state.themeVersion;
+    const message = document.getElementById("themeMessage");
+    state.themeSaving = true;
+    document.querySelectorAll('input[name="theme"]').forEach(input => { input.disabled = true; });
+    message.textContent = "Saving your theme…";
+    try {
+        const result = await requestJson("/api/me/theme", {
+            method: "PATCH",
+            body: JSON.stringify({ theme: event.target.value }),
+        });
+        if (version !== state.themeVersion) return;
+        applyTheme(result.theme);
+        message.textContent = "Theme saved to your account.";
+    } catch (error) {
+        if (version !== state.themeVersion) return;
+        applyTheme(previous);
+        message.textContent = `Could not save theme: ${error.message}`;
+    } finally {
+        if (version === state.themeVersion) {
+            state.themeSaving = false;
+            state.themeVersion += 1;
+            document.querySelectorAll('input[name="theme"]').forEach(input => { input.disabled = false; });
+            if (restoreFocus && document.activeElement === document.body) {
+                event.target.focus({ preventScroll: true });
+            }
+        }
+    }
+});
+
 // Login form
 document.getElementById("loginForm").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -3030,13 +3106,15 @@ document.addEventListener("keydown", (event) => {
     }
 });
 
-window.addEventListener("resize", () => {
+function redrawCharts() {
     renderVulnerabilityCharts();
     renderEndpointCharts({ severity: state.endpointSeverity || {} });
     drawEndpointNetworkMap(state.endpointNetworkMap || {});
     drawScanActivityCanvas();
     drawAttackSurfaceCanvas(state.asmSummary);
-});
+}
+
+window.addEventListener("resize", redrawCharts);
 
 document.getElementById("notificationForm").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -3633,6 +3711,7 @@ document.getElementById("clearLogsBtn").addEventListener("click", () => {
 // INITIALIZATION
 // ============================================================================
 
+applyTheme(document.documentElement.dataset.theme);
 setAuthUI();
 applyRoleUI();
 if (state.authenticated) {

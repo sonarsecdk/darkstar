@@ -24,6 +24,7 @@ from jwt import InvalidTokenError
 from email.message import EmailMessage
 from datetime import datetime
 from html import escape as html_escape
+from typing import Literal, get_args
 from pathlib import Path
 from collections import defaultdict
 from urllib.parse import urlencode, urlparse
@@ -134,6 +135,7 @@ from .core.db_helper import (
     update_organization_auth_requirements,
     update_platform_auth_settings,
     update_user_mfa_secret,
+    update_user_theme,
     update_m365_graph_settings,
     update_sso_settings,
     upsert_m365_secure_score_data,
@@ -338,6 +340,13 @@ class LoginRequest(BaseModel):
     organization: str | None = Field(default=None, min_length=3, max_length=100)
     password: str = Field(min_length=8, max_length=128)
     setup_token: str | None = Field(default=None, max_length=256)
+
+
+UserTheme = Literal["darkstar", "midnight", "daylight", "aurora", "sandstone"]
+
+
+class UserThemeRequest(BaseModel):
+    theme: UserTheme
 
 
 class SelectOrganizationRequest(BaseModel):
@@ -1389,12 +1398,23 @@ def _run_scan_job(scan_id: int, org_db: str, payload: ScanStartRequest):
             scan_processes.pop(scan_id, None)
 
 
+def _page_theme(request: Request) -> str:
+    """Render the account preference before the first paint, without a browser cache."""
+    user_id = _current_user_id(request)
+    if not user_id or not request.session.get("org_db"):
+        return "darkstar"
+    user = get_user_by_id(user_id) or {}
+    theme = user.get("theme")
+    return theme if theme in get_args(UserTheme) else "darkstar"
+
+
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
     return templates.TemplateResponse(
         request=request,
         name="index.html",
         context={
+            "theme": _page_theme(request),
             "logged_in": bool(request.session.get("org_db")),
             "organization": request.session.get("organization", ""),
             "role": request.session.get("role", ""),
@@ -1407,7 +1427,7 @@ def documentation(request: Request):
     return templates.TemplateResponse(
         request=request,
         name="documentation.html",
-        context={},
+        context={"theme": _page_theme(request)},
     )
 
 
@@ -1482,6 +1502,18 @@ def me(request: Request):
         "sso_required": bool(org_settings.get("sso_required")),
         "auth_method": request.session.get("auth_method", "session") if org_db else None,
     }
+
+
+@app.patch("/api/me/theme")
+def set_user_theme(payload: UserThemeRequest, request: Request):
+    _get_org_db(request)
+    user_id = _current_user_id(request)
+    if not user_id:
+        raise HTTPException(status_code=403, detail="Sign in with a personal account to choose a theme")
+    user = update_user_theme(user_id, payload.theme)
+    if not user:
+        raise HTTPException(status_code=401, detail="User account no longer exists")
+    return {"theme": user["theme"]}
 
 
 @app.post("/api/auth/login")

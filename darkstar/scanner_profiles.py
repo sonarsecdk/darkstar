@@ -53,10 +53,10 @@ def discover_scanner_profiles() -> list[dict]:
         for path in sorted(root.glob("*.policy")):
             try:
                 profile_file(root, path.name, {".policy"})
-                policy_name = ET.parse(path).getroot().findtext("policy") or path.stem
+                ET.parse(path)
             except (ET.ParseError, OSError, ValueError):
                 continue
-            add("zap", path.name, f"Active: {policy_name}")
+            add("zap", path.name, f"Active: {path.stem}")
     try:
         response = requests.get(os.environ.get("OPENVAS_API_URL", "http://openvas-api:8008").rstrip('/') + "/scan-configs", timeout=10)
         response.raise_for_status()

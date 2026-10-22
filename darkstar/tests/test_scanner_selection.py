@@ -175,16 +175,27 @@ def test_zap_recon_never_starts_active_scan(monkeypatch):
     assert parse_qs(urlsplit(calls[0]).query)['url'] == [scanner.targets[0]]
 
 
-def test_zap_imports_and_executes_selected_active_policy(monkeypatch, tmp_path):
+@pytest.mark.parametrize("assigned_name", ["custom2", "A & B"])
+def test_zap_imports_and_executes_selected_active_policy(monkeypatch, tmp_path, assigned_name):
     (tmp_path / 'custom.policy').write_text('<configuration><policy>A &amp; B</policy></configuration>')
     monkeypatch.setenv('ZAP_POLICY_DIR', str(tmp_path))
     scanner = ZAPScanner('https://example.test', 'org', profile='custom.policy')
     scanner._start_daemon = Mock(return_value=True)
     scanner._stop_daemon = Mock()
     calls = []
+    imported = False
     def api(path):
+        nonlocal imported
         calls.append(path)
-        if 'importScanPolicy' in path: return {"Result": "OK"}
+        if 'scanPolicyNames' in path:
+            return {"scanPolicyNames": ['custom', assigned_name] if imported else ['custom']}
+        if 'importScanPolicy' in path:
+            import xml.etree.ElementTree as ET
+            copy = Path(parse_qs(urlsplit(path).query)['path'][0])
+            assert copy.stem.startswith('darkstar-')
+            assert ET.parse(copy).getroot().findtext('policy') == copy.stem
+            imported = True
+            return {"Result": "OK"}
         if '/action/scan/' in path: return {"scan": "1"}
         if '/status/' in path: return {"status": "100"}
         if 'recordsToScan' in path: return {"recordsToScan": "0"}
@@ -192,9 +203,10 @@ def test_zap_imports_and_executes_selected_active_policy(monkeypatch, tmp_path):
     scanner._zap_api = api
     scanner.run()
     active = next(path for path in calls if '/ascan/action/scan/' in path)
-    assert parse_qs(urlsplit(active).query)['scanPolicyName'] == ['A & B']
-    assert 'importScanPolicy' in calls[0]
+    assert parse_qs(urlsplit(active).query)['scanPolicyName'] == [assigned_name]
+    assert any('importScanPolicy' in path for path in calls)
     scanner._stop_daemon.assert_called_once()
+    assert (tmp_path / "custom.policy").read_text() == '<configuration><policy>A &amp; B</policy></configuration>'
 
 
 def test_nuclei_executes_only_selected_template(monkeypatch, tmp_path):
@@ -258,3 +270,29 @@ def test_worker_cannot_update_another_nodes_component(api, monkeypatch):
     assert response.status_code == 404
     update.assert_not_called()
     assert api.post('/api/scanner-workers/profiles', json={'items': CATALOG}).status_code == 401
+
+
+def test_zap_cleans_up_only_the_imported_policy(monkeypatch):
+    scanner = ZAPScanner('https://example.test', 'org')
+    scanner.policy_name = 'custom2'
+    scanner._zap_api = Mock(return_value={'Result': 'OK'})
+    import urllib.request
+    monkeypatch.setattr(urllib.request, 'urlopen', Mock())
+    monkeypatch.setattr('scanners.external_vuln.time.sleep', lambda seconds: None)
+    scanner._stop_daemon()
+    path = scanner._zap_api.call_args.args[0]
+    assert 'removeScanPolicy' in path
+    assert parse_qs(urlsplit(path).query)['scanPolicyName'] == ['custom2']
+    assert scanner.policy_name is None
+
+
+def test_zap_does_not_guess_an_imported_policy_name():
+    scanner = ZAPScanner('https://example.test', 'org')
+    scanner.profile = 'custom.policy'
+    # Name discovery failure must not silently select the engine's default.
+    scanner._zap_api = Mock(return_value={'code': 'error'})
+    from unittest.mock import patch
+    with patch('scanners.external_vuln.profile_file', return_value=Path('/tmp/custom.policy')):
+        with pytest.raises(RuntimeError, match='could not list'):
+            scanner._load_policy()
+    assert scanner.policy_name is None

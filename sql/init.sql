@@ -454,3 +454,14 @@ CREATE TABLE IF NOT EXISTS platform_auth_settings (
     mfa_required BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at DATETIME NOT NULL
     );
+
+CREATE TABLE IF NOT EXISTS risk_acceptances (
+        finding_key CHAR(64) NOT NULL PRIMARY KEY,
+        finding_kind VARCHAR(16) NOT NULL,
+        reason TEXT NOT NULL,
+        accepted_by VARCHAR(255) NOT NULL,
+        accepted_at DATETIME NOT NULL,
+        expires_at DATETIME DEFAULT NULL,
+        revoked_by VARCHAR(255) DEFAULT NULL,
+        revoked_at DATETIME DEFAULT NULL
+    );

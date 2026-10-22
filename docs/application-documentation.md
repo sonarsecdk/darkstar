@@ -525,7 +525,10 @@ and `ZAP_POLICY_DIR` select the local template and policy directories. OpenVAS
 configurations come from the appliance's `OPENVAS_API_URL`. An unavailable engine
 is omitted; a removed profile fails its scanner instead of silently using a
 default. Install profiles as an appliance administrator, then wait for the next
-catalog report.
+catalog refresh. Catalogs support up to 200,000 profiles. For a separately managed
+MariaDB, set `max_allowed_packet` to at least 64 MiB for large template catalogs;
+the bundled Compose database uses this setting. A failed catalog refresh is
+retried after five minutes and does not block the worker from claiming jobs.
 
 Selections are pinned to that appliance and execute sequentially under the
 existing queue job. A failed scanner does not prevent the others from running.

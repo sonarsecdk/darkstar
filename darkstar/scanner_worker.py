@@ -74,7 +74,7 @@ class ScannerWorker:
         self.session.mount("https://", adapter)
         self.active_threads: dict[int, threading.Thread] = {}
         self.stop_event = threading.Event()
-        self._profiles_reported_at = None
+        self._profiles_checked_at = None
 
     def _api(self, method: str, path: str, **kwargs) -> Any:
         response = self.session.request(
@@ -99,9 +99,13 @@ class ScannerWorker:
         )
 
     def report_profiles(self) -> None:
-        if self._profiles_reported_at is None or time.monotonic() - self._profiles_reported_at >= 300:
-            self._api("POST", "/api/scanner-workers/profiles", json={"items": discover_scanner_profiles()})
-            self._profiles_reported_at = time.monotonic()
+        if self._profiles_checked_at is None or time.monotonic() - self._profiles_checked_at >= 300:
+            self._profiles_checked_at = time.monotonic()
+            try:
+                self._api("POST", "/api/scanner-workers/profiles", json={"items": discover_scanner_profiles()})
+            except (requests.RequestException, OSError, ValueError) as exc:
+                # Catalog refresh failures must not stop the worker claiming jobs.
+                print(f"Scanner profile refresh failed: {exc}", flush=True)
 
     def claim(self) -> dict | None:
         payload = self._api(

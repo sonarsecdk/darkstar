@@ -1,4 +1,6 @@
 import pytest
+import socket
+from darkstar.core import scan_scope
 
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
@@ -205,6 +207,8 @@ def test_attack_surface_and_subdomain_routes(api_client, monkeypatch):
 
 
 def test_start_scan_enqueues_worker_job_without_running_scanner(api_client, monkeypatch):
+    monkeypatch.setattr(webapp, "get_allowed_scan_targets", lambda org: [{"target": value} for value in ["example.com", "*.example.com", "192.0.2.0/24"]])
+    monkeypatch.setattr(scan_scope.socket, "getaddrinfo", lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", 0))])
     created = {}
     enqueued = {}
     logs = []
@@ -264,6 +268,8 @@ def test_start_scan_enqueues_worker_job_without_running_scanner(api_client, monk
 
 
 def test_schedule_routes_create_update_delete_and_run(api_client, monkeypatch):
+    monkeypatch.setattr(webapp, "get_allowed_scan_targets", lambda org: [{"target": value} for value in ["example.com", "*.example.com", "192.0.2.0/24"]])
+    monkeypatch.setattr(scan_scope.socket, "getaddrinfo", lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", 0))])
     created_schedule = {}
     run_queue = {}
 

@@ -29,7 +29,8 @@ import asyncio
 import os
 from .scanners.portscan import RustScanner, run_rustscan, process_scan_results
 from .tools.bruteforce import process_bruteforce_results
-from .core.db_helper import register_cli_organization
+from .core.db_helper import register_cli_organization, get_allowed_scan_targets
+from .core.scan_scope import ScanScope, scan_scope_context, current_scan_scope
 from .core.utils import (
     categorize_targets,
     create_target_dataframe,
@@ -161,6 +162,9 @@ class worker:
         ]
         domains = host_targets_from_targets(targets)
         email_domains = email_security_domains_from_targets(targets)
+        scope = current_scan_scope()
+        if scope is not None:
+            email_domains = [domain for domain in email_domains if scope.allows(domain)]
         ips = []
 
         for target in targets:
@@ -207,7 +211,18 @@ class worker:
             "email_domains_file": email_domains_file,
         }
 
+    def require_approved_targets(self, targets):
+        """Recheck targets immediately before handing them to another scanner."""
+        scope = current_scan_scope()
+        if scope is None:
+            return
+        if isinstance(targets, str):
+            targets = load_targets_from_file(targets) if os.path.isfile(targets) else targets
+            targets = [target.strip() for target in targets.split(",") if target.strip()]
+        scope.require(targets)
+
     async def run_port_scan(self, targets):
+        self.require_approved_targets(targets)
         logger.info(f"{Fore.CYAN}Starting RustScan on targets...{Style.RESET_ALL}")
 
         rustscan_dir = prepare_output_directory(self.org_domain, "rustscanpy")
@@ -273,12 +288,14 @@ class worker:
         }
 
     async def run_nuclei(self, target, mode: NucleiMode = NucleiMode.STANDARD):
+        self.require_approved_targets(target)
         logger.info(f"Running Nuclei scan with mode: {mode.value}")
 
         nuclei_scanner = NucleiScanner(target, self.org_domain, mode=mode, **({"profile": self.profile} if self.profile else {}))
         await asyncio.to_thread(nuclei_scanner.run)
 
     async def detect_wordpress(self, target):
+        self.require_approved_targets(target)
         wordpress_domains = await asyncio.to_thread(WordPressDetector().run, target)
 
         logger.info(
@@ -306,23 +323,27 @@ class worker:
             )
 
     async def run_openvas_scan(self, targets):
+        self.require_approved_targets(targets)
         logger.info("Running OpenVAS scan on specified targets")
 
         openvas_scanner = OpenVASScanner(org_name=self.org_domain, **({"config_id": self.profile} if self.profile else {}))
         await openvas_scanner.scan_targets(targets)
 
     async def run_asteroid(self, target, mode: Literal["normal", "aggressive"]):
+        self.require_approved_targets(target)
         logger.info("Running Asteroid scan")
 
         asteroid_scanner = AsteroidScanner(target, self.org_domain)
         await asyncio.to_thread(asteroid_scanner.run, mode=mode)
 
     async def run_asteroid_modules(self, target, modules: list[str]):
+        self.require_approved_targets(target)
         logger.info("Running focused Asteroid modules: %s", ", ".join(modules))
         asteroid_scanner = AsteroidScanner(target, self.org_domain)
         await asyncio.to_thread(asteroid_scanner.run_modules, modules)
 
     async def run_external_vulnerability_scanner(self, scanner: str):
+        self.require_approved_targets(self.all_targets)
         logger.info("Running external vulnerability scanner: %s", scanner)
         external_scanner = ExternalVulnerabilityScanner(self.all_targets, self.org_domain, **({"profile": self.profile} if self.profile else {}))
         runner = {
@@ -474,6 +495,9 @@ class worker:
                     if line.strip()
                 ]
 
+            scope = current_scan_scope()
+            if scope is not None:
+                discovered_ips = [ip for ip in discovered_ips if scope.allows(ip)]
             if discovered_ips:
                 port_result = await self.run_port_scan(discovered_ips)
                 scan_processed = port_result.get("scan_processed")
@@ -499,6 +523,12 @@ class worker:
                         attack_surface_file.write(f"{ip}:{port}\n")
 
     async def run(self):
+        scope = ScanScope([row["target"] for row in get_allowed_scan_targets(self.org_domain)])
+        scope.require([target.strip() for target in self.all_targets.split(",") if target.strip()])
+        with scan_scope_context(scope):
+            return await self._run_scanners()
+
+    async def _run_scanners(self):
         """
         Execute the scanning process based on the selected mode or scanner.
 

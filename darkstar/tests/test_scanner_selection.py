@@ -22,6 +22,7 @@ SELECTIONS = [{"scanner": item["scanner"], "profile_id": item["id"]} for item in
 
 @pytest.fixture
 def catalog(monkeypatch):
+    monkeypatch.setattr(webapp, "get_allowed_scan_targets", lambda org: [{"target": "192.0.2.1"}])
     monkeypatch.setattr(webapp, "get_scanner_node_record", lambda node: {"node_id": node, "capabilities": ["*"]})
     monkeypatch.setattr(webapp, "get_scanner_profiles", lambda node: {"items": CATALOG, "updated_at": "2026-10-22T12:00:00"})
 

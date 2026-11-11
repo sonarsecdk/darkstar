@@ -63,9 +63,14 @@ Vulnerability Disclosure process.
 | Role | Permissions |
 | --- | --- |
 | `viewer` | View results and reports. |
-| `security_analyst` | Start scans and use operational scan workflows. |
-| `tenant_admin` | Manage tenant settings, users, API keys, endpoint tokens and scanner nodes. |
-| `platform_admin` | Platform-wide tenant overview and administration. |
+| `security_analyst` | Review findings and accept or revoke network finding risk. |
+| `tenant_admin` | Manage tenant settings, users, and API keys; review network findings. |
+| `platform_admin` | Platform-wide administration, Scan Center, Cloud Security, Documentation, and Endpoints. |
+
+Only platform admins can start or stop scans, manage schedules and scanner
+appliances, use endpoint and cloud APIs, or open application/API documentation.
+Scan history remains available with dashboard results. Endpoint agents and
+scanner workers continue using their dedicated machine tokens.
 
 Platform administrators can create an organization from **Oversight → New
 organization**. Enter a name and select **Create organization**. The organization
@@ -512,7 +517,11 @@ Monthly:
 
 ### Scanner selections and installed profiles
 
-Scan Center can run several scanners as one scan. Choose an appliance, tick the
+Scan Center can run several scanners as one scan. A sole appliance is selected
+automatically. Selecting OpenVAS from Individual Scanner opens its installed
+policy selector; choose a policy before launching. The appliance status shows
+active jobs and capacity (for example, 0 active jobs; capacity 1 means idle).
+Choose an appliance, tick the
 scanners, then select one installed profile for each. Search and page through
 large catalogs. OpenVAS exposes its scan configurations; Nuclei exposes installed
 YAML templates; ZAP offers recon (spider and passive scan) and installed `.policy`

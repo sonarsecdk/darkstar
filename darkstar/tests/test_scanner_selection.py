@@ -125,7 +125,7 @@ def api(catalog, monkeypatch):
 def test_catalog_search_and_access(api):
     assert api.get('/api/scanner-nodes/node-a/profiles').status_code == 401
     assert api.get('/api/scanner-nodes/node-a/profiles', headers={"Authorization": "Bearer viewer"}).status_code == 403
-    response = api.get('/api/scanner-nodes/node-a/profiles?scanner=openvas&search=network&limit=1', headers={"Authorization": "Bearer security_analyst"})
+    response = api.get('/api/scanner-nodes/node-a/profiles?scanner=openvas&search=network&limit=1', headers={"Authorization": "Bearer platform_admin"})
     assert response.status_code == 200
     assert response.json()["items"] == [CATALOG[0]]
     assert response.json()["scanners"] == ["openvas", "zap"]

@@ -100,6 +100,8 @@ def test_deleted_account_cannot_save_theme(theme_client, monkeypatch):
 def test_theme_is_rendered_before_javascript(theme_client, monkeypatch, path):
     monkeypatch.setattr(webapp, "get_user_by_id", lambda user_id: {"id": user_id, "theme": "sandstone"})
     sign_in(theme_client, user_id=12, org_db="tenant_a", role="viewer")
+    if path == "/documentation":
+        sign_in(theme_client, user_id=12, org_db="tenant_a", role="platform_admin")
     response = theme_client.get(path)
     assert response.status_code == 200
     assert '<html lang="en" data-theme="sandstone">' in response.text

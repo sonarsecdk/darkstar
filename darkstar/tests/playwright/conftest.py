@@ -58,7 +58,7 @@ def darkstar_server():
     )
     base_url = f"http://127.0.0.1:{port}"
     try:
-        _wait_for_http(f"{base_url}/documentation")
+        _wait_for_http(f"{base_url}/")
         yield base_url
     finally:
         process.terminate()

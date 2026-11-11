@@ -13,12 +13,13 @@ pytestmark = pytest.mark.smoke
 def client(monkeypatch):
     monkeypatch.setattr(webapp, "list_organizations", list)
     monkeypatch.setattr(webapp, "scheduler_started", True)
+    monkeypatch.setattr(webapp, "authenticate_api_key", lambda token: {"org_id": 7, "org_db_name": "tenant_db", "role": "platform_admin"} if token == "platform-token" else None)
     with TestClient(webapp.app) as test_client:
         yield test_client
 
 
 def test_documentation_page_smoke(client):
-    response = client.get("/documentation")
+    response = client.get("/documentation", headers={"Authorization": "Bearer platform-token"})
 
     assert response.status_code == 200
     assert "Darkstar Documentation" in response.text
@@ -54,6 +55,9 @@ def test_auth_and_status_routes_smoke(client, monkeypatch):
     assert me.json()["authenticated"] is False
     assert protected.status_code == 401
     assert "Login or Bearer API key required" in protected.text
+    assert openapi.status_code == 401
+    monkeypatch.setattr(webapp, "authenticate_api_key", lambda token: {"org_id": 7, "org_db_name": "tenant_db", "role": "platform_admin"})
+    openapi = client.get("/openapi.json", headers={"Authorization": "Bearer platform-token"})
     assert openapi.status_code == 200
     assert "/documentation" in openapi.text
     assert "/api/scanner-workers/jobs/claim" in openapi.text

@@ -73,6 +73,10 @@
                 </div>
             </div>
             <div class="header-right">
+                <div class="header-chip">
+                    <span class="chip-label">Organization</span>
+                    <span id="topOrganizationName">{{ organization }}</span>
+                </div>
                 <div id="tenantSwitchGroup" class="header-chip hidden">
                     <span class="chip-label">Tenant</span>
                     <select id="tenantSwitchSelect" class="header-select"></select>
@@ -88,6 +92,7 @@
         <!-- Tab Navigation -->
         <nav class="tab-nav">
             <button class="tab-button active" data-tab="dashboard">Dashboard</button>
+            <button class="tab-button" data-tab="assets">Approved Assets</button>
             <button class="tab-button" data-tab="vulns">Vulnerabilities</button>
             <button class="tab-button" data-tab="surface">Attack Surface</button>
             <button class="tab-button admin-only hidden" data-tab="endpoints">Endpoints</button>
@@ -655,6 +660,31 @@
                         <button id="endpointVulnNextBtn" class="btn-secondary btn-sm">Next</button>
                     </div>
                     <p id="endpointVulnMessage" class="form-message"></p>
+                </div>
+            </div>
+
+            <!-- Approved Assets Tab -->
+            <div id="assets-tab" class="tab-panel">
+                <div class="card">
+                    <div class="card-header">Approved Assets</div>
+                    <p>Your organization's allowed scan targets. Only platform admins can change this list in Settings.</p>
+                    <div class="filter-grid">
+                        <div class="filter-group">
+                            <label for="approvedAssetSearch">Search targets</label>
+                            <input id="approvedAssetSearch" type="search" placeholder="IP address or domain" />
+                        </div>
+                        <div class="filter-group">
+                            <button id="refreshApprovedAssetsBtn" type="button" class="btn-secondary">Refresh</button>
+                        </div>
+                    </div>
+                    <p>Network ranges and wildcard rules describe permissions; they are not lists of discovered hosts.</p>
+                    <p id="approvedAssetsMessage" class="form-message" role="status"></p>
+                    <div class="table-container">
+                        <table>
+                            <thead><tr><th>Target</th><th>Type</th></tr></thead>
+                            <tbody id="approvedAssetRows"></tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
 
@@ -1234,6 +1264,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=20261111-debug-access"></script>
+    <script src="/static/js/app.js?v=20261111-customer-assets"></script>
 </body>
 </html>

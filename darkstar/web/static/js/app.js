@@ -98,6 +98,8 @@ const state = {
     tenantSwitchPending: false,
     scanScopeVersion: 0,
     scanScopeOrgDb: null,
+    approvedTargets: [],
+    approvedTargetsVersion: 0,
     scannerCatalogVersion: 0,
 };
 
@@ -1472,6 +1474,7 @@ function applyRoleUI() {
 }
 
 function renderTenantSwitch(me = {}) {
+    document.getElementById("topOrganizationName").textContent = me.organization || state.organization || "";
     const group = document.getElementById("tenantSwitchGroup");
     const select = document.getElementById("tenantSwitchSelect");
     if (!group || !select) return;
@@ -1499,6 +1502,7 @@ async function completeAuth(result, messageText = "Signed in.") {
     state.organization = result.organization;
     state.orgDb = result.org_db;
     state.role = result.role || "viewer";
+    renderTenantSwitch(result);
     state.mfaPending = false;
     state.mfaSetupPending = false;
     state.organizationSelectionPending = false;
@@ -1580,6 +1584,7 @@ function switchTab(tabName) {
     if (tabName === "scan") return Promise.all([refreshDashboard(), loadScannerApplianceOptions(), loadSchedulesView()]);
     if (tabName === "schedules") return loadSchedulesView();
     if (tabName === "settings") return Promise.all([loadNotificationSettings(), loadSecurityView(), loadScanScope()]);
+    if (tabName === "assets") return loadApprovedAssets();
     if (tabName === "m365") return loadM365View();
     if (tabName === "docs") {
         ensureDocsPage();
@@ -2507,7 +2512,51 @@ function renderScannerNodeRows(nodes) {
     }).join("");
 }
 
+function approvedTargetType(target) {
+    if (target.startsWith("*.")) return "Domain wildcard";
+    if (target.includes("/")) return "Network range";
+    if (target.includes(":") || /^\d+\.\d+\.\d+\.\d+$/.test(target)) return "IP address";
+    return "Domain";
+}
+
+function renderApprovedAssets() {
+    const search = document.getElementById("approvedAssetSearch").value.trim().toLowerCase();
+    const items = state.approvedTargets.filter(item => item.target.toLowerCase().includes(search));
+    document.getElementById("approvedAssetRows").innerHTML = items.map(item => `
+        <tr><td>${escapeHtml(item.target)}</td><td>${approvedTargetType(item.target)}</td></tr>
+    `).join("") || '<tr><td colspan="2">No approved targets match this view.</td></tr>';
+}
+
+function invalidateApprovedAssets() {
+    state.approvedTargetsVersion += 1;
+    state.approvedTargets = [];
+    document.getElementById("approvedAssetRows").innerHTML = "";
+    document.getElementById("approvedAssetsMessage").textContent = "";
+}
+
+async function loadApprovedAssets() {
+    invalidateApprovedAssets();
+    if (!state.authenticated || state.tenantSwitchPending) return;
+    const orgDb = state.orgDb;
+    const version = state.approvedTargetsVersion;
+    const message = document.getElementById("approvedAssetsMessage");
+    message.textContent = "Loading approved targets...";
+    try {
+        const result = await requestJson("/api/scan-scope");
+        if (state.orgDb !== orgDb || state.approvedTargetsVersion !== version) return;
+        state.approvedTargets = result.items || [];
+        message.textContent = state.approvedTargets.length ? "" : "No targets are approved. Contact a platform admin.";
+        renderApprovedAssets();
+    } catch (error) {
+        if (state.orgDb === orgDb && state.approvedTargetsVersion === version) message.textContent = error.message;
+    }
+}
+
+document.getElementById("approvedAssetSearch").addEventListener("input", renderApprovedAssets);
+document.getElementById("refreshApprovedAssetsBtn").addEventListener("click", loadApprovedAssets);
+
 function invalidateScanScope() {
+    invalidateApprovedAssets();
     state.scanScopeVersion += 1;
     state.scanScopeOrgDb = null;
     const input = document.getElementById("allowedTargetsInput");
@@ -2551,6 +2600,7 @@ document.getElementById("saveScanScopeBtn").addEventListener("click", async even
         }) });
         if (state.orgDb !== orgDb || state.scanScopeVersion !== version) return;
         input.value = result.items.map(item => item.target).join("\n");
+        invalidateApprovedAssets();
         message.textContent = "Allowed scan targets saved.";
     } catch (error) {
         if (state.orgDb === orgDb && state.scanScopeVersion === version) message.textContent = error.message;

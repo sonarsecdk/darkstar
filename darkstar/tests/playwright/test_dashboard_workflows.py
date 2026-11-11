@@ -852,6 +852,35 @@ def test_scan_detail_logs_close_when_admin_access_is_lost(darkstar_server):
             browser.close()
 
 
+@pytest.mark.parametrize('role', ['viewer', 'security_analyst', 'tenant_admin', 'platform_admin'])
+def test_members_see_their_organization_and_approved_targets(darkstar_server, role):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page()
+            mock_state = _install_dashboard_mocks(page, darkstar_server, role=role)
+            targets = ['192.0.2.1', '2001:db8::1', 'example.test', '192.0.2.0/24', '*.example.test']
+            page.route('**/api/scan-scope', lambda route: _json(route, {
+                'items': [{'target': target} for target in targets],
+            }))
+            page.goto(darkstar_server, wait_until='networkidle')
+            expect(page.locator('#topOrganizationName')).to_have_text('Acme Security')
+            assert not page.locator('#topOrganizationName').evaluate('(element) => element.isContentEditable')
+            page.locator('[data-tab="assets"]').click()
+            expect(page.locator('#approvedAssetRows tr')).to_have_count(5)
+            for target in targets:
+                expect(page.locator('#approvedAssetRows')).to_contain_text(target)
+            expect(page.locator('#approvedAssetRows')).to_contain_text('Network range')
+            expect(page.locator('#approvedAssetRows')).to_contain_text('Domain wildcard')
+            page.locator('#approvedAssetSearch').fill('EXAMPLE')
+            expect(page.locator('#approvedAssetRows tr')).to_have_count(2)
+            assert mock_state['unexpected'] == []
+        finally:
+            browser.close()
+
+
 def test_individual_openvas_choice_opens_installed_policies(darkstar_server):
     sync_api = pytest.importorskip('playwright.sync_api')
     expect = sync_api.expect

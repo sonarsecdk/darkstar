@@ -201,8 +201,10 @@ docker compose --profile darkstar up -d --build</code></pre>
                 <p>Scan Center, Cloud Security, Documentation and Endpoints are available only to platform admins. This restriction also applies to their management APIs.</p>
                 <h2>Scan Modes</h2>
                 <p>
-                    In Scan Center, choose a scan mode or an individual scanner. Do not choose both at the same time:
-                    the backend accepts exactly one mode or exactly one scanner.
+                    In Scan Center, choose a scan mode or select scanners with installed profiles.
+                    A sole appliance is selected automatically. Selecting OpenVAS opens its policy selector;
+                    choose a policy before launching. Job status shows active jobs and capacity, so
+                    “0 active jobs; capacity 1” means the appliance is idle.
                 </p>
                 <table>
                     <thead><tr><th>Mode</th><th>Purpose</th><th>What Darkstar Runs</th></tr></thead>

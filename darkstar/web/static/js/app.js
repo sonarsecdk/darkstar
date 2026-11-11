@@ -98,6 +98,7 @@ const state = {
     tenantSwitchPending: false,
     scanScopeVersion: 0,
     scanScopeOrgDb: null,
+    scannerCatalogVersion: 0,
 };
 
 // ============================================================================
@@ -201,8 +202,7 @@ function scannerApplianceLabel(node) {
     if (!node) return "Auto";
     const name = node.name || node.node_id || "scanner";
     const status = node.status || "unknown";
-    const running = `${node.running_jobs ?? 0}/${node.max_parallel_jobs ?? 1}`;
-    return `${name} (${status}, ${running} running)`;
+    return `${name} (${status}, ${node.running_jobs ?? 0} active jobs; capacity ${node.max_parallel_jobs ?? 1})`;
 }
 
 function scannerApplianceName(nodeId) {
@@ -246,6 +246,8 @@ async function loadScannerApplianceOptions() {
         ].join("");
         if (currentValue && state.scannerAppliances.some(node => node.node_id === currentValue)) {
             select.value = currentValue;
+        } else if (state.scannerAppliances.length === 1) {
+            select.value = state.scannerAppliances[0].node_id;
         }
     } catch (error) {
         console.warn("Failed to load scanner appliances:", error);
@@ -270,18 +272,31 @@ function clearScannerSelections() {
     });
 }
 
+function selectInstalledScanner(scanner) {
+    if (!scanner) return;
+    const checkbox = document.querySelector(`#scannerSelections input[value="${CSS.escape(scanner)}"]`);
+    if (!checkbox) return;
+    checkbox.checked = true;
+    checkbox.dispatchEvent(new Event('change'));
+    checkbox.closest('fieldset').scrollIntoView({block: 'nearest'});
+}
+
 async function loadScannerProfiles() {
     const container = document.getElementById('scannerSelections');
     const nodeId = document.getElementById('applianceInput').value;
-    if (container.dataset.nodeId === nodeId && container.dataset.orgDb === state.orgDb) return;
+    if (container.dataset.nodeId === nodeId && container.dataset.orgDb === state.orgDb &&
+        (container.dataset.loading === 'true' || container.querySelector('fieldset'))) return;
+    const version = ++state.scannerCatalogVersion;
     container.dataset.nodeId = nodeId;
     container.dataset.orgDb = state.orgDb;
+    container.dataset.loading = 'false';
     container.textContent = nodeId ? 'Loading installed profiles…' : 'Choose an appliance first.';
     if (!nodeId) return;
     const orgDb = state.orgDb;
+    container.dataset.loading = 'true';
     try {
         const catalog = await requestJson(`/api/scanner-nodes/${encodeURIComponent(nodeId)}/profiles?limit=1`);
-        if (container.dataset.nodeId !== nodeId || state.orgDb !== orgDb) return;
+        if (version !== state.scannerCatalogVersion || state.orgDb !== orgDb) return;
         container.innerHTML = '';
         if (!catalog.scanners.length) {
             container.textContent = 'This appliance has not reported any installed profiles yet.';
@@ -295,7 +310,7 @@ async function loadScannerProfiles() {
                 <label><input type="checkbox" value="${escapeHtml(scanner)}"> ${escapeHtml(label)}</label>
                 <div class="profile-controls hidden">
                     <label>Search ${escapeHtml(label)} profiles <input type="search" placeholder="Profile name or template path"></label>
-                    <label>Profile <select class="filter-select"><option value="">Choose a profile</option></select></label>
+                    <label>${scanner === 'openvas' ? 'OpenVAS policy' : 'Profile'} <select class="filter-select"><option value="">Choose a profile</option></select></label>
                     <div><button type="button" class="btn-secondary btn-sm profile-previous">Previous</button>
                     <span class="field-hint profile-count"></span>
                     <button type="button" class="btn-secondary btn-sm profile-next">Next</button></div>
@@ -345,11 +360,14 @@ async function loadScannerProfiles() {
             fieldset.querySelector('.profile-previous').addEventListener('click', () => { offset = Math.max(0, offset - 100); loadPage(); });
             fieldset.querySelector('.profile-next').addEventListener('click', () => { offset += 100; loadPage(); });
         });
+        selectInstalledScanner(document.getElementById('scannerInput').value);
     } catch (error) {
-        if (container.dataset.nodeId === nodeId) {
+        if (version === state.scannerCatalogVersion && state.orgDb === orgDb) {
             container.textContent = error.message;
             delete container.dataset.nodeId;
         }
+    } finally {
+        if (version === state.scannerCatalogVersion) container.dataset.loading = 'false';
     }
 }
 
@@ -3148,6 +3166,10 @@ document.getElementById("scanForm").addEventListener("submit", async (event) => 
     const bruteforce = document.getElementById("bruteforceInput").checked;
     const recurring = document.getElementById("recurringScanInput").checked;
     const selections = selectedScanners();
+    if (scanner === 'openvas') {
+        scanMessage.textContent = "Choose an appliance and an installed OpenVAS policy below.";
+        return;
+    }
     if (selections.some(item => !item.profile_id)) {
         scanMessage.textContent = "Choose a profile for each selected scanner.";
         return;
@@ -3225,6 +3247,7 @@ document.getElementById("scannerInput").addEventListener("change", (e) => {
     if (e.target.value) {
         clearScannerSelections();
         document.getElementById("modeInput").value = "";
+        selectInstalledScanner(e.target.value);
     }
 });
 

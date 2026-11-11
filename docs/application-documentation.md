@@ -517,7 +517,11 @@ Monthly:
 
 ### Scanner selections and installed profiles
 
-Scan Center can run several scanners as one scan. Choose an appliance, tick the
+Scan Center can run several scanners as one scan. A sole appliance is selected
+automatically. Selecting OpenVAS from Individual Scanner opens its installed
+policy selector; choose a policy before launching. The appliance status shows
+active jobs and capacity (for example, 0 active jobs; capacity 1 means idle).
+Choose an appliance, tick the
 scanners, then select one installed profile for each. Search and page through
 large catalogs. OpenVAS exposes its scan configurations; Nuclei exposes installed
 YAML templates; ZAP offers recon (spider and passive scan) and installed `.policy`

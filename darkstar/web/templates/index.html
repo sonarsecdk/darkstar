@@ -720,7 +720,7 @@
                                     </optgroup>
                                 </select>
                             </div>
-                            <p class="form-message" id="scanModeHint">Choose a mode, one scanner, or select multiple scanners below.</p>
+                            <p class="form-message" id="scanModeHint">Choose a mode or scanners below. Selecting a scanner opens its installed profiles when an appliance is selected.</p>
                             <div class="form-group">
                                 <label for="applianceInput">Scanner appliance</label>
                                 <select id="applianceInput" name="preferred_node_id" class="filter-select">
@@ -730,7 +730,7 @@
                             </div>
                             <fieldset class="form-group">
                                 <legend>Scanners and profiles</legend>
-                                <p class="field-hint">Choose an appliance to browse its installed profiles. Selected scanners run in order; a failure does not stop the others.</p>
+                                <p class="field-hint">Choose an appliance, tick a scanner, then select its policy or template. The appliance is selected automatically when only one is available. Selected scanners run in order; a failure does not stop the others.</p>
                                 <div id="scannerSelections">Choose an appliance first.</div>
                             </fieldset>
                             <div class="form-group">
@@ -1234,6 +1234,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=20261111-platform-tools"></script>
+    <script src="/static/js/app.js?v=20261111-scanner-policies"></script>
 </body>
 </html>

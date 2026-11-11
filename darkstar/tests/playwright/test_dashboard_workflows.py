@@ -778,3 +778,98 @@ def test_platform_navigation_and_scan_shortcuts_follow_role(darkstar_server, rol
             assert mock_state['unexpected'] == []
         finally:
             browser.close()
+
+
+def test_individual_openvas_choice_opens_installed_policies(darkstar_server):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page(viewport={'width': 1440, 'height': 1200})
+            mock_state = _install_dashboard_mocks(page, darkstar_server, role='platform_admin')
+            page.goto(darkstar_server, wait_until='networkidle')
+            page.locator('[data-tab="scan"]').click()
+            expect(page.locator('#applianceInput')).to_have_value('node-1')
+            expect(page.locator('#applianceInput option:checked')).to_contain_text('0 active jobs; capacity 2')
+            page.locator('#scannerInput').select_option('openvas')
+            openvas = page.locator('#scannerSelections fieldset').filter(has=page.locator('input[value="openvas"]'))
+            expect(openvas.locator('[type="checkbox"]')).to_be_checked()
+            expect(openvas.locator('select')).to_be_visible()
+            expect(openvas.locator('select option')).to_have_count(2)
+            page.locator('#targetsInput').fill('192.0.2.1')
+            page.get_by_role('button', name='Launch Scan').click()
+            expect(page.locator('#scanMessage')).to_have_text('Choose a profile for each selected scanner.')
+            assert mock_state['scan_requests'] == []
+            openvas.locator('select').select_option('network-policy')
+            page.get_by_role('button', name='Launch Scan').click()
+            expect(page.locator('#debug-tab.active')).to_be_visible()
+            assert mock_state['scan_requests'][-1]['selections'] == [{'scanner': 'openvas', 'profile_id': 'network-policy'}]
+            assert mock_state['scan_requests'][-1]['scanner'] is None
+            assert mock_state['unexpected'] == []
+        finally:
+            browser.close()
+
+
+def test_openvas_requires_appliance_and_policy_before_launch(darkstar_server):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page()
+            mock_state = _install_dashboard_mocks(page, darkstar_server, role='platform_admin')
+            page.route('**/api/scanner-nodes/available', lambda route: _json(route, {'items': [
+                {'node_id': 'node-1', 'name': 'Office', 'status': 'online'},
+                {'node_id': 'node-2', 'name': 'Other office', 'status': 'online'},
+            ]}))
+            page.goto(darkstar_server, wait_until='networkidle')
+            page.locator('[data-tab="scan"]').click()
+            expect(page.locator('#applianceInput option')).to_have_count(3)
+            expect(page.locator('#applianceInput')).to_have_value('')
+            page.locator('#scannerInput').select_option('openvas')
+            page.locator('#targetsInput').fill('192.0.2.1')
+            page.get_by_role('button', name='Launch Scan').click()
+            expect(page.locator('#scanMessage')).to_have_text('Choose an appliance and an installed OpenVAS policy below.')
+            assert mock_state['scan_requests'] == []
+            page.locator('#applianceInput').select_option('node-1')
+            openvas = page.locator('#scannerSelections fieldset').filter(has=page.locator('input[value="openvas"]'))
+            expect(openvas.locator('[type="checkbox"]')).to_be_checked()
+            expect(openvas.locator('select option')).to_have_count(2)
+            assert mock_state['unexpected'] == []
+        finally:
+            browser.close()
+
+
+def test_profile_catalog_deduplicates_pending_loads_and_retries_empty_catalog(darkstar_server):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page()
+            mock_state = _install_dashboard_mocks(page, darkstar_server, role='platform_admin')
+            pending = []
+            page.route('**/api/scanner-nodes/node-1/profiles?limit=1', lambda route: pending.append(route))
+            page.goto(darkstar_server, wait_until='networkidle')
+            with page.expect_request('**/api/scanner-nodes/node-1/profiles?limit=1'):
+                page.locator('[data-tab="scan"]').click()
+            with page.expect_response('**/api/scanner-nodes/available') as available:
+                page.locator('[data-tab="scan"]').click()
+            available.value.finished()
+            page.evaluate('() => new Promise(resolve => requestAnimationFrame(resolve))')
+            assert len(pending) == 1
+            _json(pending.pop(), {'items': [], 'scanners': [], 'total': 0})
+            expect(page.locator('#scannerSelections')).to_have_text('This appliance has not reported any installed profiles yet.')
+            with page.expect_request('**/api/scanner-nodes/node-1/profiles?limit=1'):
+                page.locator('[data-tab="scan"]').click()
+            _json(pending.pop(), {'items': [], 'scanners': ['openvas'], 'total': 1})
+            page.locator('#scannerInput').select_option('openvas')
+            openvas = page.locator('#scannerSelections fieldset').filter(has=page.locator('input[value="openvas"]'))
+            expect(openvas.locator('select option')).to_have_count(2)
+            openvas.locator('select').select_option('network-policy')
+            expect(openvas.locator('select')).to_have_value('network-policy')
+            assert mock_state['scan_requests'] == []
+            assert mock_state['unexpected'] == []
+        finally:
+            browser.close()

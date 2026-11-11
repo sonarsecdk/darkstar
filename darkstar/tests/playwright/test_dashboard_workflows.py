@@ -849,8 +849,12 @@ def test_profile_catalog_deduplicates_pending_loads_and_retries_empty_catalog(da
         try:
             page = browser.new_page()
             mock_state = _install_dashboard_mocks(page, darkstar_server, role='platform_admin')
-            pending = []
-            page.route('**/api/scanner-nodes/node-1/profiles?limit=1', lambda route: pending.append(route))
+            catalog_requests = []
+            def catalog(route):
+                catalog_requests.append(route)
+                if len(catalog_requests) > 1:
+                    _json(route, {'items': [], 'scanners': ['openvas'], 'total': 1})
+            page.route('**/api/scanner-nodes/node-1/profiles?limit=1', catalog)
             page.goto(darkstar_server, wait_until='networkidle')
             with page.expect_request('**/api/scanner-nodes/node-1/profiles?limit=1'):
                 page.locator('[data-tab="scan"]').click()
@@ -858,12 +862,12 @@ def test_profile_catalog_deduplicates_pending_loads_and_retries_empty_catalog(da
                 page.locator('[data-tab="scan"]').click()
             available.value.finished()
             page.evaluate('() => new Promise(resolve => requestAnimationFrame(resolve))')
-            assert len(pending) == 1
-            _json(pending.pop(), {'items': [], 'scanners': [], 'total': 0})
+            assert len(catalog_requests) == 1
+            _json(catalog_requests[0], {'items': [], 'scanners': [], 'total': 0})
             expect(page.locator('#scannerSelections')).to_have_text('This appliance has not reported any installed profiles yet.')
-            with page.expect_request('**/api/scanner-nodes/node-1/profiles?limit=1'):
+            with page.expect_response('**/api/scanner-nodes/node-1/profiles?limit=1'):
                 page.locator('[data-tab="scan"]').click()
-            _json(pending.pop(), {'items': [], 'scanners': ['openvas'], 'total': 1})
+            assert len(catalog_requests) == 2
             page.locator('#scannerInput').select_option('openvas')
             openvas = page.locator('#scannerSelections fieldset').filter(has=page.locator('input[value="openvas"]'))
             expect(openvas.locator('select option')).to_have_count(2)

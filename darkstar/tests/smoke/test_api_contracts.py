@@ -22,9 +22,9 @@ def api_client(monkeypatch):
             "org_id": 7,
             "org_db_name": "tenant_db",
             "org_name": "Acme Security",
-            "role": "tenant_admin",
+            "role": "platform_admin" if token == "platform-token" else "tenant_admin",
         }
-        if token == "test-token"
+        if token in {"test-token", "platform-token"}
         else None,
     )
     with TestClient(webapp.app) as test_client:
@@ -32,6 +32,7 @@ def api_client(monkeypatch):
 
 
 AUTH_HEADERS = {"Authorization": "Bearer test-token"}
+PLATFORM_AUTH_HEADERS = {"Authorization": "Bearer platform-token"}
 
 
 def test_tenant_user_management_enforces_account_scope(api_client, monkeypatch):
@@ -241,7 +242,7 @@ def test_start_scan_enqueues_worker_job_without_running_scanner(api_client, monk
 
     response = api_client.post(
         "/api/scans/start",
-        headers=AUTH_HEADERS,
+        headers=PLATFORM_AUTH_HEADERS,
         json={
             "targets": "app.example.com, portal.example.com",
             "mode": 2,
@@ -316,10 +317,10 @@ def test_schedule_routes_create_update_delete_and_run(api_client, monkeypatch):
         or 902,
     )
 
-    schedules = api_client.get("/api/schedules", headers=AUTH_HEADERS)
+    schedules = api_client.get("/api/schedules", headers=PLATFORM_AUTH_HEADERS)
     created = api_client.post(
         "/api/schedules",
-        headers=AUTH_HEADERS,
+        headers=PLATFORM_AUTH_HEADERS,
         json={
             "targets": "example.com",
             "mode": 2,
@@ -327,9 +328,9 @@ def test_schedule_routes_create_update_delete_and_run(api_client, monkeypatch):
             "interval_minutes": 10080,
         },
     )
-    toggled = api_client.patch("/api/schedules/11", headers=AUTH_HEADERS, json={"enabled": False})
-    run_now = api_client.post("/api/schedules/11/run", headers=AUTH_HEADERS)
-    deleted = api_client.delete("/api/schedules/11", headers=AUTH_HEADERS)
+    toggled = api_client.patch("/api/schedules/11", headers=PLATFORM_AUTH_HEADERS, json={"enabled": False})
+    run_now = api_client.post("/api/schedules/11/run", headers=PLATFORM_AUTH_HEADERS)
+    deleted = api_client.delete("/api/schedules/11", headers=PLATFORM_AUTH_HEADERS)
 
     assert schedules.status_code == 200
     assert schedules.json()["items"][0]["scan_name"] == "Weekly perimeter"

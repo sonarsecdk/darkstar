@@ -165,8 +165,8 @@
                     <thead><tr><th>Role</th><th>Purpose</th><th>Examples</th></tr></thead>
                     <tbody>
                         <tr><td><code>viewer</code></td><td>Read and report</td><td>View dashboard, filter findings, download exports</td></tr>
-                        <tr><td><code>security_analyst</code></td><td>Operational scanning</td><td>Start scans, view debug logs, triage scan results</td></tr>
-                        <tr><td><code>tenant_admin</code></td><td>Tenant administration</td><td>Manage users, API keys, MFA/SSO, notifications and scanner nodes</td></tr>
+                        <tr><td><code>security_analyst</code></td><td>Finding review</td><td>Review results and accept or revoke network finding risk</td></tr>
+                        <tr><td><code>tenant_admin</code></td><td>Tenant administration</td><td>Manage users, API keys, MFA/SSO and notifications</td></tr>
                         <tr><td><code>platform_admin</code></td><td>Platform administration</td><td>Tenant overview, platform-wide MFA policy and admin users</td></tr>
                     </tbody>
                 </table>
@@ -198,6 +198,7 @@ docker compose --profile darkstar up -d --build</code></pre>
             </section>
 
             <section id="scan-modes" class="doc-section">
+                <p>Scan Center, Cloud Security, Documentation and Endpoints are available only to platform admins. This restriction also applies to their management APIs.</p>
                 <h2>Scan Modes</h2>
                 <p>
                     In Scan Center, choose a scan mode or an individual scanner. Do not choose both at the same time:

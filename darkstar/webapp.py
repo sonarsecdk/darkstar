@@ -31,6 +31,7 @@ from urllib.parse import urlencode, urlparse
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -203,7 +204,7 @@ def _resolve_session_secret() -> str:
     return configured
 
 
-app = FastAPI(title="Darkstar Dashboard", version="1.0.0")
+app = FastAPI(title="Darkstar Dashboard", version="1.0.0", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(
     SessionMiddleware,
     secret_key=_resolve_session_secret(),
@@ -1531,8 +1532,27 @@ def index(request: Request):
     )
 
 
+@app.get("/openapi.json", include_in_schema=False)
+def openapi_schema(request: Request):
+    _require_platform_admin(request)
+    return app.openapi()
+
+
+@app.get("/docs", include_in_schema=False)
+def api_documentation(request: Request):
+    _require_platform_admin(request)
+    return get_swagger_ui_html(openapi_url="/openapi.json", title="Darkstar API")
+
+
+@app.get("/redoc", include_in_schema=False)
+def api_reference(request: Request):
+    _require_platform_admin(request)
+    return get_redoc_html(openapi_url="/openapi.json", title="Darkstar API")
+
+
 @app.get("/documentation", response_class=HTMLResponse)
 def documentation(request: Request):
+    _require_platform_admin(request)
     return templates.TemplateResponse(
         request=request,
         name="documentation.html",
@@ -2055,21 +2075,22 @@ def delete_rest_api_key(request: Request, key_id: int):
 
 @app.get("/api/endpoints/overview")
 def endpoint_overview(request: Request, include_accepted: bool = False):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
     return get_endpoint_overview(org_db, include_accepted=include_accepted)
 
 
 @app.get("/api/endpoints/enrollment-tokens")
 def endpoint_enrollment_tokens(request: Request):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
-    _require_min_role(request, "tenant_admin")
     return {"items": list_endpoint_enrollment_tokens(org_db)}
 
 
 @app.post("/api/endpoints/enrollment-tokens")
 def create_endpoint_enrollment(request: Request, body: EndpointEnrollmentRequest):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
-    _require_min_role(request, "tenant_admin")
     token = create_endpoint_enrollment_token(org_db, body.name, body.expires_days)
     token["install_command"] = _endpoint_install_command(org_db, token["token"], request)
     return token
@@ -2077,8 +2098,8 @@ def create_endpoint_enrollment(request: Request, body: EndpointEnrollmentRequest
 
 @app.delete("/api/endpoints/enrollment-tokens/{token_id}")
 def revoke_endpoint_enrollment(request: Request, token_id: int):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
-    _require_min_role(request, "tenant_admin")
     if not revoke_endpoint_enrollment_token(org_db, token_id):
         raise HTTPException(status_code=404, detail="Endpoint enrollment token not found")
     return {"ok": True}
@@ -2093,13 +2114,14 @@ def endpoint_agents(
     offset: int = 0,
     include_accepted: bool = False,
 ):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
-    _require_min_role(request, "viewer")
     return list_endpoint_agents(org_db, search=search, status=status, limit=limit, offset=offset, include_accepted=include_accepted)
 
 
 @app.get("/api/endpoints/agents/{agent_id}")
 def endpoint_agent_detail(request: Request, agent_id: str):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
     row = get_endpoint_agent(org_db, agent_id)
     if not row:
@@ -2109,15 +2131,15 @@ def endpoint_agent_detail(request: Request, agent_id: str):
 
 @app.get("/api/endpoints/network-map")
 def endpoint_network_map(request: Request, include_accepted: bool = False):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
-    _require_min_role(request, "viewer")
     return get_endpoint_network_map(org_db, include_accepted=include_accepted)
 
 
 @app.post("/api/endpoints/agents/{agent_id}/revoke")
 def revoke_endpoint_agent_api(request: Request, agent_id: str):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
-    _require_min_role(request, "tenant_admin")
     if not revoke_endpoint_agent(org_db, agent_id):
         raise HTTPException(status_code=404, detail="Endpoint agent not found or already revoked")
     return {"ok": True}
@@ -2125,8 +2147,8 @@ def revoke_endpoint_agent_api(request: Request, agent_id: str):
 
 @app.delete("/api/endpoints/agents/{agent_id}")
 def delete_endpoint_agent_api(request: Request, agent_id: str):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
-    _require_min_role(request, "tenant_admin")
     if not delete_endpoint_agent(org_db, agent_id):
         raise HTTPException(status_code=404, detail="Endpoint agent not found")
     return {"ok": True}
@@ -2140,6 +2162,7 @@ def endpoint_software(
     limit: int = 100,
     offset: int = 0,
 ):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
     return list_endpoint_software(org_db, agent_id=agent_id, search=search, limit=limit, offset=offset)
 
@@ -2154,6 +2177,7 @@ def endpoint_vulnerabilities(
     offset: int = 0,
     include_accepted: bool = False,
 ):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
     return list_endpoint_vulnerabilities(
         org_db,
@@ -2168,8 +2192,8 @@ def endpoint_vulnerabilities(
 
 @app.post("/api/endpoints/vulnerabilities/recalculate")
 def recalculate_endpoint_vulnerabilities_api(request: Request):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
-    _require_min_role(request, "security_analyst")
     agents_processed = 0
     software_total = 0
     vulnerability_total = 0
@@ -2226,6 +2250,7 @@ def recalculate_endpoint_vulnerabilities_api(request: Request):
 
 @app.get("/api/endpoints/vulnerabilities/{finding_id}")
 def endpoint_vulnerability_detail(request: Request, finding_id: int):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
     row = get_endpoint_vulnerability(org_db, finding_id)
     if not row:
@@ -2298,13 +2323,13 @@ def endpoint_agent_inventory(request: Request, body: EndpointInventoryRequest):
 
 @app.get("/api/scanner-nodes")
 def scanner_nodes(request: Request):
-    _require_min_role(request, "platform_admin")
+    _require_platform_admin(request)
     return {"items": list_scanner_nodes()}
 
 
 @app.get("/api/scanner-nodes/available")
 def available_scanner_nodes(request: Request):
-    _require_min_role(request, "security_analyst")
+    _require_platform_admin(request)
     items = []
     for node in list_available_scanner_nodes():
         items.append(
@@ -2322,7 +2347,7 @@ def available_scanner_nodes(request: Request):
 
 @app.post("/api/scanner-nodes")
 def create_scanner_node_api(request: Request, body: ScannerNodeRequest):
-    _require_min_role(request, "platform_admin")
+    _require_platform_admin(request)
     node = create_scanner_node(
         body.name,
         capabilities=body.capabilities,
@@ -2334,7 +2359,7 @@ def create_scanner_node_api(request: Request, body: ScannerNodeRequest):
 
 @app.delete("/api/scanner-nodes/{node_id}")
 def delete_scanner_node_api(request: Request, node_id: str):
-    _require_min_role(request, "platform_admin")
+    _require_platform_admin(request)
     if not revoke_scanner_node(node_id):
         raise HTTPException(status_code=404, detail="Scanner node not found")
     return {"ok": True}
@@ -2342,7 +2367,7 @@ def delete_scanner_node_api(request: Request, node_id: str):
 
 @app.delete("/api/scanner-nodes/{node_id}/record")
 def delete_revoked_scanner_node_api(request: Request, node_id: str):
-    _require_min_role(request, "platform_admin")
+    _require_platform_admin(request)
     if not delete_revoked_scanner_node(node_id):
         raise HTTPException(status_code=400, detail="Only revoked scanner nodes without active jobs can be deleted")
     return {"ok": True}
@@ -2369,7 +2394,7 @@ def scanner_worker_profiles(request: Request, body: ScannerCatalogRequest):
 
 @app.get("/api/scanner-nodes/{node_id}/profiles")
 def scanner_node_profiles(request: Request, node_id: str, scanner: str | None = None, search: str = "", offset: int = 0, limit: int = 100):
-    _require_min_role(request, "security_analyst")
+    _require_platform_admin(request)
     node = get_scanner_node_record(node_id)
     if not node or node.get("revoked_at"):
         raise HTTPException(status_code=404, detail="Scanner appliance not found")
@@ -2536,8 +2561,8 @@ def stats(request: Request, include_accepted: bool = False):
 
 @app.post("/api/scans/start")
 def start_scan(request: Request, body: ScanStartRequest):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
-    _require_min_role(request, "security_analyst")
     scan_id = _queue_scan(org_db, body)
     return {"ok": True, "scan_id": scan_id, "status": "queued"}
 
@@ -2545,8 +2570,8 @@ def start_scan(request: Request, body: ScanStartRequest):
 @app.post("/api/scans/{scan_id}/stop")
 def stop_scan(request: Request, scan_id: int):
     """Request termination of a running scan process."""
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
-    _require_min_role(request, "security_analyst")
     scan = get_scan_record(org_db, scan_id)
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
@@ -2640,6 +2665,8 @@ def _write_risk_acceptance(request: Request, finding_id: int, body: RiskAcceptan
     org_db = _get_org_db(request)
     _require_min_role(request, "security_analyst")
     kind = "endpoint" if request.url.path.startswith("/api/endpoints/") else "network"
+    if kind == "endpoint":
+        _require_platform_admin(request)
     actor = request.session.get("user_email") or request.session.get("organization")
     if getattr(request.state, "api_key_id", None) is not None:
         actor = f"api_key:{request.state.api_key_id}"
@@ -2708,14 +2735,15 @@ def scoring_overview(
 
 @app.get("/api/schedules")
 def schedules(request: Request):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
     return {"items": get_scan_schedules(org_db)}
 
 
 @app.post("/api/schedules")
 def create_schedule(request: Request, body: ScheduleRequest):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
-    _require_min_role(request, "security_analyst")
     _validate_scan_payload(body)
     _require_scan_scope(org_db, body.targets)
     try:
@@ -2740,8 +2768,8 @@ def create_schedule(request: Request, body: ScheduleRequest):
 
 @app.patch("/api/schedules/{schedule_id}")
 def update_schedule_enabled(request: Request, schedule_id: int, body: ScheduleEnabledRequest):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
-    _require_min_role(request, "security_analyst")
     if not set_scan_schedule_enabled(org_db, schedule_id, body.enabled):
         raise HTTPException(status_code=404, detail="Schedule not found")
     return {"ok": True, "schedule_id": schedule_id, "enabled": body.enabled}
@@ -2749,8 +2777,8 @@ def update_schedule_enabled(request: Request, schedule_id: int, body: ScheduleEn
 
 @app.delete("/api/schedules/{schedule_id}")
 def remove_schedule(request: Request, schedule_id: int):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
-    _require_min_role(request, "security_analyst")
     if not delete_scan_schedule(org_db, schedule_id):
         raise HTTPException(status_code=404, detail="Schedule not found")
     return {"ok": True}
@@ -2758,8 +2786,8 @@ def remove_schedule(request: Request, schedule_id: int):
 
 @app.post("/api/schedules/{schedule_id}/run")
 def run_schedule_now(request: Request, schedule_id: int):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
-    _require_min_role(request, "security_analyst")
     schedule = get_scan_schedule(org_db, schedule_id)
     if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -2857,14 +2885,15 @@ def org_remove_user(request: Request, user_id: int):
 
 @app.get("/api/integrations/m365/settings")
 def m365_settings(request: Request):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
     return get_m365_graph_settings(org_db)
 
 
 @app.patch("/api/integrations/m365/settings")
 def update_m365_settings(request: Request, body: M365GraphSettingsRequest):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
-    _require_min_role(request, "tenant_admin")
     return update_m365_graph_settings(
         org_db,
         tenant_id=body.tenant_id,
@@ -2876,14 +2905,15 @@ def update_m365_settings(request: Request, body: M365GraphSettingsRequest):
 
 @app.get("/api/integrations/m365/secure-score")
 def m365_secure_score(request: Request):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
     return get_m365_secure_score(org_db)
 
 
 @app.post("/api/integrations/m365/secure-score/sync")
 def sync_m365_secure_score(request: Request):
+    _require_platform_admin(request)
     org_db = _get_org_db(request)
-    _require_min_role(request, "security_analyst")
     return _fetch_m365_secure_score(org_db)
 
 

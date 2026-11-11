@@ -233,7 +233,7 @@ function updateScanWorkerWarning() {
 
 async function loadScannerApplianceOptions() {
     const select = document.getElementById("applianceInput");
-    if (!select || !state.authenticated || roleRank(state.role) < roleRank("security_analyst")) return;
+    if (!select || !state.authenticated || state.role !== "platform_admin") return;
     const currentValue = select.value;
     try {
         const result = await requestJson("/api/scanner-nodes/available");
@@ -1417,7 +1417,10 @@ function roleRank(role) {
     }[role || "viewer"] || 0;
 }
 
+const PLATFORM_TABS = new Set(["scan", "schedules", "endpoints", "m365", "docs", "oversight"]);
+
 function applyRoleUI() {
+    if (state.role !== "platform_admin" && PLATFORM_TABS.has(state.currentTab)) switchTab("dashboard");
     const isPlatformAdmin = state.role === "platform_admin";
     const isTenantAdmin = roleRank(state.role) >= roleRank("tenant_admin");
     const canWrite = roleRank(state.role) >= roleRank("security_analyst");
@@ -1428,8 +1431,9 @@ function applyRoleUI() {
         el.classList.toggle("hidden", !isTenantAdmin);
     });
     document.querySelectorAll(".write-action").forEach(el => {
-        el.disabled = !canWrite;
-        el.classList.toggle("hidden", !canWrite);
+        const allowed = canWrite && (!el.classList.contains("admin-only") || isPlatformAdmin);
+        el.disabled = !allowed;
+        el.classList.toggle("hidden", !allowed);
     });
 }
 
@@ -1516,6 +1520,7 @@ function handleAuthStep(result) {
 
 // Returns a Promise that resolves once the tab's data has loaded.
 function switchTab(tabName) {
+    if (PLATFORM_TABS.has(tabName) && state.role !== "platform_admin") tabName = "dashboard";
     document.querySelectorAll(".tab-panel").forEach(tab => tab.classList.remove("active"));
     document.querySelectorAll(".tab-button").forEach(btn => btn.classList.remove("active"));
 
@@ -1591,7 +1596,7 @@ function renderActiveScans(items) {
                 ${escapeHtml(formatScanMode(scan.scan_mode))} &middot;
                 ${statusBadge(scan.status)}
             </div>
-            <button class="btn-danger btn-sm stop-scan-btn" data-scan-id="${scan.id}">Stop</button>
+            ${state.role === "platform_admin" ? `<button class="btn-danger btn-sm stop-scan-btn" data-scan-id="${scan.id}">Stop</button>` : ""}
         </div>
     `).join("");
 }
@@ -1613,7 +1618,7 @@ function renderScans(items) {
                     <td>${escapeHtml(formatScanMode(scan.scan_mode))}</td>
                     <td>${statusBadge(scan.status)}</td>
                     <td><span class="date-text">${escapeHtml(formatDateTime(scan.created_at))}</span></td>
-                    <td>${status === "running" || status === "queued" || status === "stopping" ? `<button class="btn-danger btn-sm stop-scan-btn" data-scan-id="${scan.id}">Stop</button>` : "-"}</td>
+                    <td>${state.role === "platform_admin" && ["running", "queued", "stopping"].includes(status) ? `<button class="btn-danger btn-sm stop-scan-btn" data-scan-id="${scan.id}">Stop</button>` : "-"}</td>
                 </tr>
             `;
         })
@@ -2047,7 +2052,7 @@ async function loadBbotSubdomainsView() {
                     <td>${compactList(item.sources, 3)}</td>
                     <td>${compactList(item.tags, 4)}</td>
                     <td>${escapeHtml(formatDateTime(item.last_seen))}</td>
-                    <td><button type="button" class="btn-secondary btn-sm scan-subdomain-btn" data-target="${escapeHtml(target)}">Scan</button></td>
+                    <td>${state.role === "platform_admin" ? `<button type="button" class="btn-secondary btn-sm scan-subdomain-btn" data-target="${escapeHtml(target)}">Scan</button>` : ""}</td>
                 </tr>
             `;
         }).join("") || '<tr><td colspan="9">No BBot subdomains found yet.</td></tr>';
@@ -2065,6 +2070,7 @@ function subdomainScanSelection() {
 }
 
 async function startBbotSubdomainScan(targets, label = "BBot target scan") {
+    if (state.role !== "platform_admin") return;
     const message = document.getElementById("bbotSubdomainMessage");
     const cleanTargets = [...new Set((targets || []).map(item => String(item || "").trim()).filter(Boolean))];
     if (!cleanTargets.length) {
@@ -3130,6 +3136,7 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
 // Scan form
 document.getElementById("scanForm").addEventListener("submit", async (event) => {
     event.preventDefault();
+    if (state.role !== "platform_admin") return;
     const scanMessage = document.getElementById("scanMessage");
     scanMessage.textContent = "";
 

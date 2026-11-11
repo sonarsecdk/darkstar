@@ -90,11 +90,11 @@
             <button class="tab-button active" data-tab="dashboard">Dashboard</button>
             <button class="tab-button" data-tab="vulns">Vulnerabilities</button>
             <button class="tab-button" data-tab="surface">Attack Surface</button>
-            <button class="tab-button" data-tab="endpoints">Endpoints</button>
-            <button class="tab-button" data-tab="scan">Scan Center</button>
+            <button class="tab-button admin-only hidden" data-tab="endpoints">Endpoints</button>
+            <button class="tab-button admin-only hidden" data-tab="scan">Scan Center</button>
             <button class="tab-button" data-tab="settings">Settings</button>
-            <button class="tab-button" data-tab="m365">Cloud Security</button>
-            <a class="documentation-link" href="/documentation" target="_blank" rel="noopener">Documentation</a>
+            <button class="tab-button admin-only hidden" data-tab="m365">Cloud Security</button>
+            <a class="documentation-link admin-only hidden" href="/documentation" target="_blank" rel="noopener">Documentation</a>
             <button class="tab-button admin-only hidden" data-tab="oversight">Oversight</button>
             <button class="tab-button" data-tab="debug">Debug</button>
             <button id="hostTabButton" class="tab-button hidden" data-tab="host">Host</button>
@@ -111,7 +111,7 @@
                         <h2>Vulnerability intelligence, attack surface management</h2>
                     </div>
                     <div class="hero-actions">
-                        <button class="btn-primary" type="button" data-tab-shortcut="scan">Start scan</button>
+                        <button class="btn-primary admin-only hidden" type="button" data-tab-shortcut="scan">Start scan</button>
                         <button class="btn-secondary" type="button" data-tab-shortcut="surface">Attack surface</button>
                     </div>
                 </section>
@@ -359,8 +359,8 @@
                     <div class="card-header">
                         Found Subdomains
                         <span>
-                            <button type="button" id="scanSelectedSubdomainsBtn" class="btn-secondary btn-sm">Scan selected</button>
-                            <button type="button" id="scanAllSubdomainsBtn" class="btn-secondary btn-sm">Scan all subdomains</button>
+                            <button type="button" id="scanSelectedSubdomainsBtn" class="btn-secondary btn-sm admin-only hidden">Scan selected</button>
+                            <button type="button" id="scanAllSubdomainsBtn" class="btn-secondary btn-sm admin-only hidden">Scan all subdomains</button>
                         </span>
                     </div>
                     <div class="filter-grid">
@@ -373,7 +373,7 @@
                             <label for="bbotSubdomainSearchInput">Search subdomains</label>
                             <input id="bbotSubdomainSearchInput" type="text" placeholder="subdomain, URL, IP, tag" />
                         </div>
-                        <div class="filter-group">
+                        <div class="filter-group admin-only hidden">
                             <label for="bbotSubdomainScanTypeInput">Scan as</label>
                             <select id="bbotSubdomainScanTypeInput" class="filter-select">
                                 <option value="mode:2">Normal scan</option>
@@ -1234,6 +1234,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=20261022-scope-tenant-switch"></script>
+    <script src="/static/js/app.js?v=20261111-platform-tools"></script>
 </body>
 </html>

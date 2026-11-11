@@ -63,9 +63,14 @@ Vulnerability Disclosure process.
 | Role | Permissions |
 | --- | --- |
 | `viewer` | View results and reports. |
-| `security_analyst` | Start scans and use operational scan workflows. |
-| `tenant_admin` | Manage tenant settings, users, API keys, endpoint tokens and scanner nodes. |
-| `platform_admin` | Platform-wide tenant overview and administration. |
+| `security_analyst` | Review findings and accept or revoke network finding risk. |
+| `tenant_admin` | Manage tenant settings, users, and API keys; review network findings. |
+| `platform_admin` | Platform-wide administration, Scan Center, Cloud Security, Documentation, and Endpoints. |
+
+Only platform admins can start or stop scans, manage schedules and scanner
+appliances, use endpoint and cloud APIs, or open application/API documentation.
+Scan history remains available with dashboard results. Endpoint agents and
+scanner workers continue using their dedicated machine tokens.
 
 Platform administrators can create an organization from **Oversight → New
 organization**. Enter a name and select **Create organization**. The organization

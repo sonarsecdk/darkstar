@@ -47,7 +47,7 @@ def test_manual_and_scheduled_scans_reject_unapproved_targets(api, monkeypatch, 
     create = Mock()
     monkeypatch.setattr(webapp, 'create_scan_record', create)
     monkeypatch.setattr(webapp, 'create_scan_schedule', create)
-    response = api.post(path, headers={'Authorization': 'Bearer security_analyst'}, json={'targets': targets, 'scanner': 'nuclei'})
+    response = api.post(path, headers={'Authorization': 'Bearer platform_admin'}, json={'targets': targets, 'scanner': 'nuclei'})
     assert response.status_code == 403
     create.assert_not_called()
 

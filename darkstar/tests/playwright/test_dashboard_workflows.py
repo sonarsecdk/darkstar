@@ -52,7 +52,7 @@ def _json(route, payload, status=200):
     )
 
 
-def _install_dashboard_mocks(page, base_url):
+def _install_dashboard_mocks(page, base_url, role="tenant_admin"):
     state = {
         "scan_requests": [],
         "schedule_requests": [],
@@ -88,7 +88,7 @@ def _install_dashboard_mocks(page, base_url):
             'data-organization=""',
             'data-organization="Acme Security" data-org-db="tenant_db"',
         )
-        html = html.replace('data-role=""', 'data-role="tenant_admin"')
+        html = html.replace('data-role=""', f'data-role="{role}"')
         route.fulfill(response=response, body=html)
 
     def filtered_vulnerabilities(query):
@@ -151,6 +151,9 @@ def _install_dashboard_mocks(page, base_url):
         query = parse_qs(parsed.query)
         method = request.method.upper()
 
+        if path in {"/api/admin/auth/policy", "/api/admin/organizations", "/api/admin/users", "/api/scanner-nodes"}:
+            _json(route, {"items": []})
+            return
         if path == "/api/me":
             _json(
                 route,
@@ -158,7 +161,7 @@ def _install_dashboard_mocks(page, base_url):
                     "authenticated": True,
                     "organization": "Acme Security",
                     "org_db": "tenant_db",
-                    "role": "tenant_admin",
+                    "role": role,
                     "user": {"email": "analyst@example.org"},
                     "auth_method": "session",
                     "organizations": [
@@ -396,7 +399,7 @@ def test_dashboard_vulnerabilities_and_scan_center_workflow(darkstar_server):
         browser = playwright.chromium.launch()
         try:
             page = browser.new_page(viewport={"width": 1440, "height": 1200})
-            mock_state = _install_dashboard_mocks(page, darkstar_server)
+            mock_state = _install_dashboard_mocks(page, darkstar_server, role="platform_admin")
             page.goto(f"{darkstar_server}/", wait_until="networkidle")
 
             expect(page.locator("#mainDashboard")).to_be_visible()
@@ -449,7 +452,7 @@ def test_attack_surface_subdomains_can_be_queued_without_running_scans(darkstar_
         browser = playwright.chromium.launch()
         try:
             page = browser.new_page(viewport={"width": 1280, "height": 1100})
-            mock_state = _install_dashboard_mocks(page, darkstar_server)
+            mock_state = _install_dashboard_mocks(page, darkstar_server, role="platform_admin")
             page.goto(f"{darkstar_server}/", wait_until="networkidle")
 
             page.locator('[data-tab="surface"]').click()
@@ -574,7 +577,7 @@ def test_scan_center_selects_profiles_and_keeps_them_in_schedules(darkstar_serve
         browser = playwright.chromium.launch()
         try:
             page = browser.new_page(viewport={"width": 1440, "height": 1200})
-            state = _install_dashboard_mocks(page, darkstar_server)
+            state = _install_dashboard_mocks(page, darkstar_server, role="platform_admin")
             page.goto(f'{darkstar_server}/', wait_until='networkidle')
             page.locator('[data-tab="scan"]').click()
             page.locator('#applianceInput').select_option('node-1')
@@ -735,6 +738,43 @@ def test_scan_scope_ignores_previous_tenant_requests(darkstar_server, pending_op
             expect(input_field).to_be_editable()
             expect(save_button).to_be_enabled()
             assert writes == ([] if pending_operation == 'load' else [('tenant_db', {'targets': ['192.0.2.10']})])
+            assert mock_state['unexpected'] == []
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('role', ['viewer', 'security_analyst', 'tenant_admin', 'platform_admin'])
+def test_platform_navigation_and_scan_shortcuts_follow_role(darkstar_server, role):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page()
+            mock_state = _install_dashboard_mocks(page, darkstar_server, role=role)
+            page.goto(darkstar_server, wait_until='networkidle')
+            admin = role == 'platform_admin'
+            for selector in ['[data-tab="scan"]', '[data-tab="endpoints"]', '[data-tab="m365"]',
+                             'a[href="/documentation"]', '[data-tab-shortcut="scan"]']:
+                if admin:
+                    expect(page.locator(selector)).to_be_visible()
+                else:
+                    expect(page.locator(selector)).to_be_hidden()
+            if not admin:
+                for tab in ['scan', 'schedules', 'endpoints', 'm365', 'docs']:
+                    page.evaluate('(tab) => switchTab(tab)', tab)
+                    expect(page.locator('#dashboard-tab')).to_have_class('tab-panel active')
+                expect(page.locator('.stop-scan-btn')).to_have_count(0)
+            page.locator('[data-tab="surface"]').click()
+            expect(page.locator('#bbotSubdomainRows')).to_contain_text('app.example.com')
+            if admin:
+                expect(page.locator('#scanSelectedSubdomainsBtn')).to_be_visible()
+                expect(page.locator('.scan-subdomain-btn').first).to_be_visible()
+            else:
+                expect(page.locator('#scanSelectedSubdomainsBtn')).to_be_hidden()
+                expect(page.locator('#scanAllSubdomainsBtn')).to_be_hidden()
+                expect(page.locator('.scan-subdomain-btn')).to_have_count(0)
+            assert mock_state['scan_requests'] == []
             assert mock_state['unexpected'] == []
         finally:
             browser.close()

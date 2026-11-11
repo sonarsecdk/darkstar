@@ -24,7 +24,7 @@ def test_risk_writes_enforce_roles_and_current_tenant(client, mocker, prefix, ki
     response = client.request(method, f"{prefix}/42/risk-acceptance",
                               headers={"Authorization": f"Bearer {role}"} if role else {},
                               json={"reason": "Mitigated"} if method == "POST" else None)
-    allowed = role in {"security_analyst", "tenant_admin", "platform_admin"}
+    allowed = role == "platform_admin" if kind == "endpoint" else role in {"security_analyst", "tenant_admin", "platform_admin"}
     assert response.status_code == (200 if allowed else 403 if role else 401)
     if allowed:
         write.assert_called_once_with("tenant_a", kind, 42, actor="api_key:12", reason="Mitigated" if method == "POST" else None,
@@ -58,6 +58,7 @@ def test_risk_write_errors_are_reported(client, mocker, error, status):
 ])
 def test_accepted_risks_are_explicitly_opted_into(client, mocker, include, path, helper):
     query = mocker.patch.object(webapp, helper, return_value=[])
-    response = client.get(path + ("?include_accepted=true" if include else ""), headers={"Authorization": "Bearer viewer"})
+    role = "platform_admin" if path.startswith("/api/endpoints/") else "viewer"
+    response = client.get(path + ("?include_accepted=true" if include else ""), headers={"Authorization": f"Bearer {role}"})
     assert response.status_code == 200
     assert query.call_args.kwargs["include_accepted"] is include

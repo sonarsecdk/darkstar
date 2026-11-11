@@ -781,6 +781,77 @@ def test_platform_navigation_and_scan_shortcuts_follow_role(darkstar_server, rol
             browser.close()
 
 
+@pytest.mark.parametrize('role', ['viewer', 'security_analyst', 'tenant_admin', 'platform_admin'])
+def test_debug_navigation_and_logs_follow_role(darkstar_server, role):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page()
+            mock_state = _install_dashboard_mocks(page, darkstar_server, role=role)
+            debug_requests = []
+            page.on('request', lambda request: debug_requests.append(request.url)
+                    if '/api/scans/' in request.url else None)
+            page.goto(darkstar_server, wait_until='networkidle')
+            expect(page.locator('#scanRows')).to_contain_text('101')
+            if role in ['tenant_admin', 'platform_admin']:
+                expect(page.locator('[data-tab="debug"]')).to_be_visible()
+                expect(page.locator('.scan-detail-row')).to_have_count(2)
+                page.locator('[data-tab="debug"]').click()
+                page.locator('#debugScanSelect').select_option('101')
+                expect(page.locator('#debugOutput')).to_contain_text('Queued for scanner workers')
+                page.wait_for_function('state.ws && state.wsPingTimer')
+                # A role change must also close an existing stream and clear its output.
+                page.evaluate('''() => {
+                    window.previousDebugSocket = state.ws;
+                    startDebugPolling(101);
+                    state.role = 'viewer';
+                    applyRoleUI();
+                }''')
+                expect(page.locator('[data-tab="debug"]')).to_be_hidden()
+                expect(page.locator('#dashboard-tab.active')).to_be_visible()
+                expect(page.locator('#debugOutput')).to_have_text('')
+                assert page.evaluate('previousDebugSocket.readyState === WebSocket.CLOSED')
+                assert page.evaluate('state.ws === null && state.wsPingTimer === null && state.debugPollTimer === null')
+            else:
+                expect(page.locator('[data-tab="debug"]')).to_be_hidden()
+                expect(page.locator('.scan-detail-row')).to_have_count(0)
+                page.evaluate('''async () => {
+                    await switchTab('debug');
+                    await openScanDetail(101);
+                    await loadScanLogs(101);
+                }''')
+                expect(page.locator('#dashboard-tab.active')).to_be_visible()
+                assert debug_requests == []
+            assert mock_state['unexpected'] == []
+        finally:
+            browser.close()
+
+
+def test_scan_detail_logs_close_when_admin_access_is_lost(darkstar_server):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page()
+            mock_state = _install_dashboard_mocks(page, darkstar_server, role='tenant_admin')
+            page.route('**/api/scans/101', lambda route: _json(route, {
+                'scan': {'id': 101, 'scan_name': 'Test scan', 'status': 'completed'},
+                'logs': [{'message': 'Scanner execution output'}],
+            }))
+            page.goto(darkstar_server, wait_until='networkidle')
+            page.locator('.scan-detail-row[data-scan-id="101"]').click()
+            expect(page.locator('#detailBody')).to_contain_text('Scanner execution output')
+            page.evaluate("() => { state.role = 'security_analyst'; applyRoleUI(); }")
+            expect(page.locator('#detailOverlay')).to_be_hidden()
+            expect(page.locator('#detailBody')).to_have_text('')
+            assert mock_state['unexpected'] == []
+        finally:
+            browser.close()
+
+
 def test_individual_openvas_choice_opens_installed_policies(darkstar_server):
     sync_api = pytest.importorskip('playwright.sync_api')
     expect = sync_api.expect

@@ -1148,6 +1148,7 @@ function openDetailDrawer(eyebrow, title, bodyHtml) {
 }
 
 function closeDetailDrawer() {
+    state.selectedScanId = null;
     const overlay = document.getElementById("detailOverlay");
     if (!overlay) return;
     overlay.classList.add("hidden");
@@ -1207,11 +1208,12 @@ function scanDuration(scan) {
 }
 
 async function openScanDetail(scanId) {
-    if (!scanId) return;
+    if (!scanId || !canViewDebug()) return;
     state.selectedScanId = scanId;
     openDetailDrawer("Scan", `Scan ${scanId}`, '<div class="empty-state">Loading scan details...</div>');
     try {
         const result = await requestJson(`/api/scans/${encodeURIComponent(scanId)}`);
+        if (!canViewDebug()) return;
         const scan = result.scan || {};
         const logs = result.logs || [];
         const logPreview = logs.slice(-80).map(log => {
@@ -1246,6 +1248,7 @@ async function openScanDetail(scanId) {
             </section>
         `);
     } catch (error) {
+        if (!canViewDebug()) return;
         openDetailDrawer("Scan", `Scan ${scanId}`, `<div class="empty-state">Failed to load scan details: ${escapeHtml(error.message)}</div>`);
     }
 }
@@ -1417,6 +1420,7 @@ function setAuthUI() {
     if (dashboardPanel) dashboardPanel.classList.toggle("hidden", !state.authenticated);
     if (logoutBtn) logoutBtn.classList.toggle("hidden", !state.authenticated);
     if (!state.authenticated) {
+        stopDebugStream();
         invalidateScanScope();
         state.includeAcceptedRisks = false;
         document.querySelectorAll(".include-accepted-risks").forEach(input => { input.checked = false; });
@@ -1438,11 +1442,22 @@ function roleRank(role) {
 
 const PLATFORM_TABS = new Set(["scan", "schedules", "endpoints", "m365", "docs", "oversight"]);
 
+function canViewDebug() {
+    return roleRank(state.role) >= roleRank("tenant_admin");
+}
+
 function applyRoleUI() {
     if (state.role !== "platform_admin" && PLATFORM_TABS.has(state.currentTab)) switchTab("dashboard");
     const isPlatformAdmin = state.role === "platform_admin";
     const isTenantAdmin = roleRank(state.role) >= roleRank("tenant_admin");
     const canWrite = roleRank(state.role) >= roleRank("security_analyst");
+    if (!isTenantAdmin) {
+        if (state.currentTab === "debug") switchTab("dashboard");
+        if (state.selectedScanId) closeDetailDrawer();
+        stopDebugStream();
+        state.debugLogs = [];
+        renderDebugLogs();
+    }
     document.querySelectorAll(".admin-only").forEach(el => {
         el.classList.toggle("hidden", !isPlatformAdmin);
     });
@@ -1540,6 +1555,7 @@ function handleAuthStep(result) {
 // Returns a Promise that resolves once the tab's data has loaded.
 function switchTab(tabName) {
     if (PLATFORM_TABS.has(tabName) && state.role !== "platform_admin") tabName = "dashboard";
+    if (tabName === "debug" && !canViewDebug()) tabName = "dashboard";
     document.querySelectorAll(".tab-panel").forEach(tab => tab.classList.remove("active"));
     document.querySelectorAll(".tab-button").forEach(btn => btn.classList.remove("active"));
 
@@ -1631,7 +1647,7 @@ function renderScans(items) {
         .map((scan) => {
             const status = (scan.status || "unknown").toLowerCase();
             return `
-                <tr class="clickable-row scan-detail-row" data-scan-id="${escapeHtml(scan.id)}">
+                <tr class="${canViewDebug() ? "clickable-row scan-detail-row" : ""}" data-scan-id="${escapeHtml(scan.id)}">
                     <td>${scan.id}</td>
                     <td>${escapeHtml(scan.scan_name || "-")}</td>
                     <td>${escapeHtml(formatScanMode(scan.scan_mode))}</td>
@@ -2800,6 +2816,7 @@ document.getElementById("createOrganizationForm").addEventListener("submit", asy
 // ============================================================================
 
 async function loadDebugPanel() {
+    if (!canViewDebug()) return;
     try {
         // Load list of scans for debug selection
         const scans = await requestJson("/api/scans?limit=100");
@@ -2818,17 +2835,14 @@ async function loadDebugPanel() {
 }
 
 async function loadScanLogs(scanId) {
-    if (!scanId) return;
+    if (!scanId || !canViewDebug()) return;
 
     try {
         state.activeScanId = scanId;
-        stopDebugPolling();
-        if (state.ws) {
-            state.ws.__manualClose = true;
-            state.ws.close();
-        }
+        stopDebugStream();
 
         const logs = await requestJson(`/api/scans/${scanId}/logs?limit=1000`);
+        if (!canViewDebug()) return;
         state.debugLogs = (logs.items || []).map(log => escapeHtml(log.message || ""));
         renderDebugLogs();
 
@@ -2847,9 +2861,12 @@ function stopDebugPolling() {
 
 function startDebugPolling(scanId) {
     stopDebugPolling();
+    if (!canViewDebug()) return;
     state.debugPollTimer = setInterval(async () => {
         try {
+            if (!canViewDebug()) return stopDebugPolling();
             const logs = await requestJson(`/api/scans/${scanId}/logs?limit=1000`);
+            if (!canViewDebug()) return;
             state.debugLogs = (logs.items || []).map(log => escapeHtml(log.message || ""));
             renderDebugLogs();
         } catch (error) {
@@ -2858,16 +2875,21 @@ function startDebugPolling(scanId) {
     }, 3000);
 }
 
-function connectDebugWebSocket(scanId) {
+function stopDebugStream() {
+    stopDebugPolling();
     if (state.ws) {
         state.ws.__manualClose = true;
         state.ws.close();
+        state.ws = null;
     }
     if (state.wsPingTimer) {
         clearInterval(state.wsPingTimer);
         state.wsPingTimer = null;
     }
+}
 
+function connectDebugWebSocket(scanId) {
+    stopDebugStream();
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${protocol}//${window.location.host}/ws/scan/${scanId}`;
 
@@ -2876,6 +2898,7 @@ function connectDebugWebSocket(scanId) {
     let fallbackStarted = false;
 
     function attemptConnect() {
+        if (!canViewDebug()) return;
         try {
             console.log(`[WebSocket] Attempting connection (attempt ${reconnectAttempts + 1}/${maxReconnectAttempts})...`);
             state.ws = new WebSocket(wsUrl);

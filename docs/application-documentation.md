@@ -64,13 +64,15 @@ Vulnerability Disclosure process.
 | --- | --- |
 | `viewer` | View results and reports. |
 | `security_analyst` | Review findings and accept or revoke network finding risk. |
-| `tenant_admin` | Manage tenant settings, users, and API keys; review network findings. |
+| `tenant_admin` | Manage tenant settings, users, API keys, scans, and schedules within approved scope. |
 | `platform_admin` | Platform-wide administration, Scan Center, Cloud Security, Documentation, and Endpoints. |
 
-Only platform admins can start or stop scans, manage schedules and scanner
+Tenant and platform admins can start or stop scans, manage schedules, and read
+scanner profiles. Only platform admins can change target approvals, manage scanner
 appliances, use endpoint and cloud APIs, or open application/API documentation.
-Scan history remains available with dashboard results. Endpoint agents and
-scanner workers continue using their dedicated machine tokens.
+All members can view their organization's name, approved assets, and scan history.
+Debug and scan execution logs require a tenant or platform admin. Endpoint agents
+and scanner workers continue using their dedicated machine tokens.
 
 Platform administrators can create an organization from **Oversight → New
 organization**. Enter a name and select **Create organization**. The organization
@@ -187,6 +189,18 @@ Scan Center queues scan jobs centrally. A scan can run locally or through a
 distributed scanner appliance.
 
 ### Targets
+
+**Approved Assets** shows the current organization's list from
+**Settings → Allowed scan targets**. The organization name is displayed in the
+header as read-only text. Tenant and platform admins can select IPs and domains
+and use **Scan selected** to open Scan Center with those targets filled in.
+The same picker is available directly in Scan Center.
+
+Network ranges and wildcard approvals are labelled separately and are not expanded
+into discovered hosts. The picker selects only explicit IPs and domains. Manual
+targets still support approved URLs and ranges; the server checks every target
+and resolved address. Scans and schedules store the selected targets, so later
+list additions do not silently change existing schedules.
 
 Targets can be entered as:
 

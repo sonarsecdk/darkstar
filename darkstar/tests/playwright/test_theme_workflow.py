@@ -173,7 +173,10 @@ def test_organization_switch_during_save_keeps_picker_usable(theme_page):
     page.locator('[data-tab="settings"]').click()
     page.get_by_role("radio", name="Aurora", exact=True).check()
     expect(page.locator("#themeMessage")).to_have_text("Saving your theme…")
-    page.evaluate("user => completeAuth({organization: 'Another tenant', org_db: 'tenant_b', role: 'viewer', user})", account)
+    identity = {"organization": "Another tenant", "org_db": "tenant_b", "role": "viewer", "user": account}
+    page.route("**/api/me", lambda route: route.fulfill(json={"authenticated": True, **identity}))
+    page.evaluate("identity => completeAuth(identity)", identity)
+    expect(page.locator("#topOrganizationName")).to_have_text("Another tenant")
     expect(page.get_by_role("radio", name="Daylight", exact=True)).to_be_enabled()
     with page.expect_response("**/api/me/theme"):
         pending[0].fulfill(json={"theme": "aurora"})

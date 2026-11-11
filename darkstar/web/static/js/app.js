@@ -8,6 +8,7 @@ const state = {
     orgDb: document.body.dataset.orgDb || "",
     role: document.body.dataset.role || "",
     organizations: [],
+    sessionVersion: 0,
     themeVersion: 0,
     themeSaving: false,
     organizationCreationPending: false,
@@ -98,6 +99,9 @@ const state = {
     tenantSwitchPending: false,
     scanScopeVersion: 0,
     scanScopeOrgDb: null,
+    approvedTargets: [],
+    approvedTargetsVersion: 0,
+    approvedTargetsOrgDb: null,
     scannerCatalogVersion: 0,
 };
 
@@ -233,10 +237,12 @@ function updateScanWorkerWarning() {
 
 async function loadScannerApplianceOptions() {
     const select = document.getElementById("applianceInput");
-    if (!select || !state.authenticated || state.role !== "platform_admin") return;
+    if (!select || !state.authenticated || !canManageScans() || state.tenantSwitchPending) return;
     const currentValue = select.value;
+    const sessionVersion = state.sessionVersion;
     try {
         const result = await requestJson("/api/scanner-nodes/available");
+        if (sessionVersion !== state.sessionVersion || !canManageScans()) return;
         state.scannerAppliances = result.items || [];
         select.innerHTML = [
             '<option value="">Auto - any available appliance</option>',
@@ -251,6 +257,7 @@ async function loadScannerApplianceOptions() {
             select.value = activeNodes[0].node_id;
         }
     } catch (error) {
+        if (sessionVersion !== state.sessionVersion) return;
         console.warn("Failed to load scanner appliances:", error);
         select.innerHTML = '<option value="">Auto - any available appliance</option>';
         state.scannerAppliances = [];
@@ -1420,6 +1427,8 @@ function setAuthUI() {
     if (dashboardPanel) dashboardPanel.classList.toggle("hidden", !state.authenticated);
     if (logoutBtn) logoutBtn.classList.toggle("hidden", !state.authenticated);
     if (!state.authenticated) {
+        state.sessionVersion += 1;
+        document.getElementById("topOrganizationName").textContent = "";
         stopDebugStream();
         invalidateScanScope();
         state.includeAcceptedRisks = false;
@@ -1440,7 +1449,12 @@ function roleRank(role) {
     }[role || "viewer"] || 0;
 }
 
-const PLATFORM_TABS = new Set(["scan", "schedules", "endpoints", "m365", "docs", "oversight"]);
+const PLATFORM_TABS = new Set(["endpoints", "m365", "docs", "oversight"]);
+const TENANT_TABS = new Set(["scan", "schedules", "debug"]);
+
+function canManageScans() {
+    return roleRank(state.role) >= roleRank("tenant_admin");
+}
 
 function canViewDebug() {
     return roleRank(state.role) >= roleRank("tenant_admin");
@@ -1452,12 +1466,13 @@ function applyRoleUI() {
     const isTenantAdmin = roleRank(state.role) >= roleRank("tenant_admin");
     const canWrite = roleRank(state.role) >= roleRank("security_analyst");
     if (!isTenantAdmin) {
-        if (state.currentTab === "debug") switchTab("dashboard");
+        if (TENANT_TABS.has(state.currentTab)) switchTab("dashboard");
         if (state.selectedScanId) closeDetailDrawer();
         stopDebugStream();
         state.debugLogs = [];
         renderDebugLogs();
     }
+    updateApprovedAssetSelection();
     document.querySelectorAll(".admin-only").forEach(el => {
         el.classList.toggle("hidden", !isPlatformAdmin);
     });
@@ -1465,13 +1480,15 @@ function applyRoleUI() {
         el.classList.toggle("hidden", !isTenantAdmin);
     });
     document.querySelectorAll(".write-action").forEach(el => {
-        const allowed = canWrite && (!el.classList.contains("admin-only") || isPlatformAdmin);
+        const allowed = canWrite && (!el.classList.contains("admin-only") || isPlatformAdmin) &&
+            (!el.classList.contains("tenant-admin-only") || isTenantAdmin);
         el.disabled = !allowed;
         el.classList.toggle("hidden", !allowed);
     });
 }
 
 function renderTenantSwitch(me = {}) {
+    document.getElementById("topOrganizationName").textContent = me.organization || state.organization || "";
     const group = document.getElementById("tenantSwitchGroup");
     const select = document.getElementById("tenantSwitchSelect");
     if (!group || !select) return;
@@ -1491,6 +1508,7 @@ function renderTenantSwitch(me = {}) {
 }
 
 async function completeAuth(result, messageText = "Signed in.") {
+    state.sessionVersion += 1;
     invalidateScanScope();
     state.authenticated = true;
     state.themeVersion += 1;
@@ -1499,6 +1517,7 @@ async function completeAuth(result, messageText = "Signed in.") {
     state.organization = result.organization;
     state.orgDb = result.org_db;
     state.role = result.role || "viewer";
+    renderTenantSwitch(result);
     state.mfaPending = false;
     state.mfaSetupPending = false;
     state.organizationSelectionPending = false;
@@ -1555,7 +1574,7 @@ function handleAuthStep(result) {
 // Returns a Promise that resolves once the tab's data has loaded.
 function switchTab(tabName) {
     if (PLATFORM_TABS.has(tabName) && state.role !== "platform_admin") tabName = "dashboard";
-    if (tabName === "debug" && !canViewDebug()) tabName = "dashboard";
+    if (TENANT_TABS.has(tabName) && !canManageScans()) tabName = "dashboard";
     document.querySelectorAll(".tab-panel").forEach(tab => tab.classList.remove("active"));
     document.querySelectorAll(".tab-button").forEach(btn => btn.classList.remove("active"));
 
@@ -1577,9 +1596,10 @@ function switchTab(tabName) {
     if (tabName === "scoring")  return loadScoringView();
     if (tabName === "debug")    return loadDebugPanel();
     if (tabName === "host")     return loadHostView();
-    if (tabName === "scan") return Promise.all([refreshDashboard(), loadScannerApplianceOptions(), loadSchedulesView()]);
+    if (tabName === "scan") return Promise.all([refreshDashboard(), loadScannerApplianceOptions(), loadSchedulesView(), loadApprovedAssets()]);
     if (tabName === "schedules") return loadSchedulesView();
     if (tabName === "settings") return Promise.all([loadNotificationSettings(), loadSecurityView(), loadScanScope()]);
+    if (tabName === "assets") return loadApprovedAssets();
     if (tabName === "m365") return loadM365View();
     if (tabName === "docs") {
         ensureDocsPage();
@@ -1631,7 +1651,7 @@ function renderActiveScans(items) {
                 ${escapeHtml(formatScanMode(scan.scan_mode))} &middot;
                 ${statusBadge(scan.status)}
             </div>
-            ${state.role === "platform_admin" ? `<button class="btn-danger btn-sm stop-scan-btn" data-scan-id="${scan.id}">Stop</button>` : ""}
+            ${canManageScans() ? `<button class="btn-danger btn-sm stop-scan-btn" data-scan-id="${scan.id}">Stop</button>` : ""}
         </div>
     `).join("");
 }
@@ -1653,7 +1673,7 @@ function renderScans(items) {
                     <td>${escapeHtml(formatScanMode(scan.scan_mode))}</td>
                     <td>${statusBadge(scan.status)}</td>
                     <td><span class="date-text">${escapeHtml(formatDateTime(scan.created_at))}</span></td>
-                    <td>${state.role === "platform_admin" && ["running", "queued", "stopping"].includes(status) ? `<button class="btn-danger btn-sm stop-scan-btn" data-scan-id="${scan.id}">Stop</button>` : "-"}</td>
+                    <td>${canManageScans() && ["running", "queued", "stopping"].includes(status) ? `<button class="btn-danger btn-sm stop-scan-btn" data-scan-id="${scan.id}">Stop</button>` : "-"}</td>
                 </tr>
             `;
         })
@@ -1661,7 +1681,8 @@ function renderScans(items) {
 }
 
 async function refreshDashboard() {
-    if (!state.authenticated) return;
+    if (!state.authenticated || state.tenantSwitchPending) return;
+    const sessionVersion = state.sessionVersion;
     // A refresh started before a save or login must not restore an old preference.
     const themeVersion = state.themeVersion;
 
@@ -1671,11 +1692,20 @@ async function refreshDashboard() {
             requestJson(riskFilterUrl("/api/stats")),
             requestJson("/api/scans?limit=50"),
         ]);
+        if (sessionVersion !== state.sessionVersion) return;
 
         if (themeVersion === state.themeVersion && state.authenticated) {
             updateAppearance(me.user);
         }
         if (me.organization) {
+            if (state.orgDb && state.orgDb !== me.org_db) {
+                // Another browser tab may have switched the shared session.
+                state.sessionVersion += 1;
+                invalidateScanScope();
+                stopDebugStream();
+                closeDetailDrawer();
+                switchTab("dashboard");
+            }
             state.organization = me.organization;
             state.orgDb = me.org_db;
             state.role = me.role || "";
@@ -2087,7 +2117,7 @@ async function loadBbotSubdomainsView() {
                     <td>${compactList(item.sources, 3)}</td>
                     <td>${compactList(item.tags, 4)}</td>
                     <td>${escapeHtml(formatDateTime(item.last_seen))}</td>
-                    <td>${state.role === "platform_admin" ? `<button type="button" class="btn-secondary btn-sm scan-subdomain-btn" data-target="${escapeHtml(target)}">Scan</button>` : ""}</td>
+                    <td>${canManageScans() ? `<button type="button" class="btn-secondary btn-sm scan-subdomain-btn" data-target="${escapeHtml(target)}">Scan</button>` : ""}</td>
                 </tr>
             `;
         }).join("") || '<tr><td colspan="9">No BBot subdomains found yet.</td></tr>';
@@ -2105,7 +2135,7 @@ function subdomainScanSelection() {
 }
 
 async function startBbotSubdomainScan(targets, label = "BBot target scan") {
-    if (state.role !== "platform_admin") return;
+    if (!canManageScans() || state.tenantSwitchPending) return;
     const message = document.getElementById("bbotSubdomainMessage");
     const cleanTargets = [...new Set((targets || []).map(item => String(item || "").trim()).filter(Boolean))];
     if (!cleanTargets.length) {
@@ -2335,11 +2365,14 @@ function renderEndpointVulnerabilities(items) {
 // ============================================================================
 
 async function loadSchedulesView() {
+    if (!canManageScans() || state.tenantSwitchPending) return;
+    const sessionVersion = state.sessionVersion;
     try {
         const [result, appliances] = await Promise.all([
             requestJson("/api/schedules"),
             requestJson("/api/scanner-nodes/available").catch(() => ({ items: state.scannerAppliances || [] })),
         ]);
+        if (sessionVersion !== state.sessionVersion || !canManageScans()) return;
         state.scannerAppliances = appliances.items || state.scannerAppliances || [];
         document.getElementById("scheduleRows").innerHTML = (result.items || []).map(schedule => `
             <tr>
@@ -2507,7 +2540,134 @@ function renderScannerNodeRows(nodes) {
     }).join("");
 }
 
+function approvedTargetType(target) {
+    if (target.startsWith("*.")) return "Domain wildcard";
+    if (target.includes("/")) return "Network range";
+    if (target.includes(":") || /^\d+\.\d+\.\d+\.\d+$/.test(target)) return "IP address";
+    return "Domain";
+}
+
+function renderApprovedAssets() {
+    const search = document.getElementById("approvedAssetSearch").value.trim().toLowerCase();
+    const items = state.approvedTargets.filter(item => item.target.toLowerCase().includes(search));
+    document.getElementById("approvedAssetRows").innerHTML = items.map(item => `
+        <tr>${canManageScans() ? `<td class="tenant-admin-only">${isIndividualTarget(item.target)
+            ? `<input type="checkbox" class="approved-asset-choice" value="${escapeHtml(item.target)}" aria-label="Select ${escapeHtml(item.target)}">` : '—'}</td>` : ''}
+            <td>${escapeHtml(item.target)}</td><td>${approvedTargetType(item.target)}</td></tr>
+    `).join("") || `<tr><td colspan="${canManageScans() ? 3 : 2}">No approved targets match this view.</td></tr>`;
+    updateApprovedAssetSelection();
+}
+
+function isIndividualTarget(target) {
+    return !target.startsWith("*.") && !target.includes("/");
+}
+
+function updateApprovedAssetSelection() {
+    const count = document.querySelectorAll(".approved-asset-choice:checked").length;
+    const ready = canManageScans() && !state.tenantSwitchPending && state.approvedTargetsOrgDb === state.orgDb;
+    document.getElementById("scanApprovedAssetsBtn").disabled = !ready || !count;
+    document.getElementById("selectAllApprovedAssetsBtn").disabled = !ready || !document.querySelector(".approved-asset-choice");
+    document.getElementById("approvedAssetSelectionCount").textContent = `${count} selected`;
+}
+
+function scanTargetValues() {
+    return [...new Set(document.getElementById("targetsInput").value.split(/[,\r\n]+/).map(value => value.trim()).filter(Boolean))];
+}
+
+function updateScanTargetSelection() {
+    const selected = new Set(scanTargetValues());
+    document.querySelectorAll(".scan-asset-choice").forEach(input => { input.checked = selected.has(input.value); });
+    document.getElementById("scanTargetCount").textContent = `${selected.size} targets`;
+}
+
+function renderScanAssetChoices() {
+    const items = state.approvedTargets.filter(item => isIndividualTarget(item.target));
+    document.getElementById("scanAssetChoices").innerHTML = items.map(item => `
+        <label class="toggle-row"><input type="checkbox" class="scan-asset-choice" value="${escapeHtml(item.target)}"> ${escapeHtml(item.target)}</label>
+    `).join("") || '<p class="field-hint">No individual IPs or domains are available to select.</p>';
+    document.getElementById("selectAllScanAssetsBtn").disabled = !items.length || !canManageScans() || state.tenantSwitchPending;
+    updateScanTargetSelection();
+}
+
+function invalidateApprovedAssets() {
+    state.approvedTargetsVersion += 1;
+    state.approvedTargets = [];
+    state.approvedTargetsOrgDb = null;
+    document.getElementById("approvedAssetRows").innerHTML = "";
+    document.getElementById("approvedAssetsMessage").textContent = "";
+    document.getElementById("scanAssetChoices").textContent = "Approved targets have not been loaded.";
+    document.getElementById("selectAllScanAssetsBtn").disabled = true;
+    updateApprovedAssetSelection();
+}
+
+async function loadApprovedAssets() {
+    invalidateApprovedAssets();
+    if (!state.authenticated || state.tenantSwitchPending) return;
+    const orgDb = state.orgDb;
+    const version = state.approvedTargetsVersion;
+    const message = document.getElementById("approvedAssetsMessage");
+    message.textContent = "Loading approved targets...";
+    document.getElementById("scanAssetChoices").textContent = message.textContent;
+    try {
+        const result = await requestJson("/api/scan-scope");
+        if (state.orgDb !== orgDb || state.approvedTargetsVersion !== version) return;
+        state.approvedTargets = result.items || [];
+        state.approvedTargetsOrgDb = orgDb;
+        message.textContent = state.approvedTargets.length ? "" : "No targets are approved. Contact a platform admin.";
+        renderApprovedAssets();
+        renderScanAssetChoices();
+    } catch (error) {
+        if (state.orgDb === orgDb && state.approvedTargetsVersion === version) {
+            message.textContent = error.message;
+            document.getElementById("scanAssetChoices").textContent = `Could not load approved targets: ${error.message}`;
+        }
+    }
+}
+
+document.getElementById("approvedAssetSearch").addEventListener("input", renderApprovedAssets);
+document.getElementById("refreshApprovedAssetsBtn").addEventListener("click", loadApprovedAssets);
+document.getElementById("approvedAssetRows").addEventListener("change", updateApprovedAssetSelection);
+document.getElementById("selectAllApprovedAssetsBtn").addEventListener("click", () => {
+    if (!canManageScans() || state.tenantSwitchPending) return;
+    document.querySelectorAll(".approved-asset-choice").forEach(input => { input.checked = true; });
+    updateApprovedAssetSelection();
+});
+document.getElementById("scanApprovedAssetsBtn").addEventListener("click", async () => {
+    if (!canManageScans() || state.tenantSwitchPending || state.approvedTargetsOrgDb !== state.orgDb) return;
+    const targets = Array.from(document.querySelectorAll(".approved-asset-choice:checked"), input => input.value);
+    if (!targets.length) return;
+    const orgDb = state.orgDb;
+    document.getElementById("targetsInput").value = "";
+    await switchTab("scan");
+    if (state.orgDb !== orgDb || state.tenantSwitchPending || !canManageScans()) return;
+    if (state.approvedTargetsOrgDb !== orgDb || targets.some(target => !state.approvedTargets.some(item => item.target === target))) {
+        document.getElementById("scanMessage").textContent = "The selected assets could not be verified. Refresh the list and select them again.";
+        return;
+    }
+    document.getElementById("targetsInput").value = targets.join("\n");
+    updateScanTargetSelection();
+});
+document.getElementById("scanAssetChoices").addEventListener("change", event => {
+    if (!event.target.matches(".scan-asset-choice") || !canManageScans() || state.tenantSwitchPending) return;
+    const targets = new Set(scanTargetValues());
+    if (event.target.checked) targets.add(event.target.value);
+    else targets.delete(event.target.value);
+    document.getElementById("targetsInput").value = [...targets].join("\n");
+    updateScanTargetSelection();
+});
+document.getElementById("selectAllScanAssetsBtn").addEventListener("click", () => {
+    if (!canManageScans() || state.tenantSwitchPending || state.approvedTargetsOrgDb !== state.orgDb) return;
+    const targets = new Set(scanTargetValues());
+    state.approvedTargets.filter(item => isIndividualTarget(item.target)).forEach(item => targets.add(item.target));
+    document.getElementById("targetsInput").value = [...targets].join("\n");
+    updateScanTargetSelection();
+});
+document.getElementById("targetsInput").addEventListener("input", updateScanTargetSelection);
+
 function invalidateScanScope() {
+    invalidateApprovedAssets();
+    document.getElementById("targetsInput").value = "";
+    updateScanTargetSelection();
     state.scanScopeVersion += 1;
     state.scanScopeOrgDb = null;
     const input = document.getElementById("allowedTargetsInput");
@@ -2551,6 +2711,7 @@ document.getElementById("saveScanScopeBtn").addEventListener("click", async even
         }) });
         if (state.orgDb !== orgDb || state.scanScopeVersion !== version) return;
         input.value = result.items.map(item => item.target).join("\n");
+        invalidateApprovedAssets();
         message.textContent = "Allowed scan targets saved.";
     } catch (error) {
         if (state.orgDb === orgDb && state.scanScopeVersion === version) message.textContent = error.message;
@@ -3048,6 +3209,7 @@ async function switchTenant(orgDb) {
     if (!orgDb || orgDb === state.orgDb || state.tenantSwitchPending) return;
     // The session cookie can change before the organization response is handled.
     state.tenantSwitchPending = true;
+    state.sessionVersion += 1;
     invalidateScanScope();
     try {
         const result = await requestJson("/api/auth/select-organization", {
@@ -3062,6 +3224,7 @@ async function switchTenant(orgDb) {
         await switchTab("dashboard");
     } finally {
         state.tenantSwitchPending = false;
+        await refreshDashboard();
         if (state.currentTab === "settings" && state.authenticated) await loadScanScope();
     }
 }
@@ -3178,7 +3341,7 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
 // Scan form
 document.getElementById("scanForm").addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (state.role !== "platform_admin") return;
+    if (!canManageScans() || state.tenantSwitchPending) return;
     const scanMessage = document.getElementById("scanMessage");
     scanMessage.textContent = "";
 
@@ -3328,6 +3491,7 @@ document.addEventListener("click", async (event) => {
 
     const stopBtn = event.target.closest(".stop-scan-btn");
     if (stopBtn) {
+        if (!canManageScans() || state.tenantSwitchPending) return;
         await requestJson(`/api/scans/${stopBtn.dataset.scanId}/stop`, { method: "POST" });
         await refreshDashboard();
         return;
@@ -3377,6 +3541,7 @@ document.addEventListener("click", async (event) => {
 
     const runScheduleBtn = event.target.closest(".run-schedule-btn");
     if (runScheduleBtn) {
+        if (!canManageScans() || state.tenantSwitchPending) return;
         const result = await requestJson(`/api/schedules/${runScheduleBtn.dataset.scheduleId}/run`, { method: "POST" });
         await refreshDashboard();
         await switchTab("debug");
@@ -3387,6 +3552,7 @@ document.addEventListener("click", async (event) => {
 
     const toggleScheduleBtn = event.target.closest(".toggle-schedule-btn");
     if (toggleScheduleBtn) {
+        if (!canManageScans() || state.tenantSwitchPending) return;
         await requestJson(`/api/schedules/${toggleScheduleBtn.dataset.scheduleId}`, {
             method: "PATCH",
             body: JSON.stringify({ enabled: toggleScheduleBtn.dataset.enabled === "true" }),
@@ -3397,6 +3563,7 @@ document.addEventListener("click", async (event) => {
 
     const deleteScheduleBtn = event.target.closest(".delete-schedule-btn");
     if (deleteScheduleBtn) {
+        if (!canManageScans() || state.tenantSwitchPending) return;
         await requestJson(`/api/schedules/${deleteScheduleBtn.dataset.scheduleId}`, { method: "DELETE" });
         await loadSchedulesView();
         return;

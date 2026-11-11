@@ -1527,6 +1527,7 @@ def index(request: Request):
             "theme": _page_theme(request),
             "logged_in": bool(request.session.get("org_db")),
             "organization": request.session.get("organization", ""),
+            "org_db": request.session.get("org_db", ""),
             "role": request.session.get("role", ""),
         },
     )
@@ -2329,7 +2330,7 @@ def scanner_nodes(request: Request):
 
 @app.get("/api/scanner-nodes/available")
 def available_scanner_nodes(request: Request):
-    _require_platform_admin(request)
+    _require_min_role(request, "tenant_admin")
     items = []
     for node in list_available_scanner_nodes():
         items.append(
@@ -2394,7 +2395,7 @@ def scanner_worker_profiles(request: Request, body: ScannerCatalogRequest):
 
 @app.get("/api/scanner-nodes/{node_id}/profiles")
 def scanner_node_profiles(request: Request, node_id: str, scanner: str | None = None, search: str = "", offset: int = 0, limit: int = 100):
-    _require_platform_admin(request)
+    _require_min_role(request, "tenant_admin")
     node = get_scanner_node_record(node_id)
     if not node or node.get("revoked_at"):
         raise HTTPException(status_code=404, detail="Scanner appliance not found")
@@ -2567,7 +2568,7 @@ def stats(request: Request, include_accepted: bool = False):
 
 @app.post("/api/scans/start")
 def start_scan(request: Request, body: ScanStartRequest):
-    _require_platform_admin(request)
+    _require_min_role(request, "tenant_admin")
     org_db = _get_org_db(request)
     scan_id = _queue_scan(org_db, body)
     return {"ok": True, "scan_id": scan_id, "status": "queued"}
@@ -2576,7 +2577,7 @@ def start_scan(request: Request, body: ScanStartRequest):
 @app.post("/api/scans/{scan_id}/stop")
 def stop_scan(request: Request, scan_id: int):
     """Request termination of a running scan process."""
-    _require_platform_admin(request)
+    _require_min_role(request, "tenant_admin")
     org_db = _get_org_db(request)
     scan = get_scan_record(org_db, scan_id)
     if not scan:
@@ -2742,14 +2743,14 @@ def scoring_overview(
 
 @app.get("/api/schedules")
 def schedules(request: Request):
-    _require_platform_admin(request)
+    _require_min_role(request, "tenant_admin")
     org_db = _get_org_db(request)
     return {"items": get_scan_schedules(org_db)}
 
 
 @app.post("/api/schedules")
 def create_schedule(request: Request, body: ScheduleRequest):
-    _require_platform_admin(request)
+    _require_min_role(request, "tenant_admin")
     org_db = _get_org_db(request)
     _validate_scan_payload(body)
     _require_scan_scope(org_db, body.targets)
@@ -2775,7 +2776,7 @@ def create_schedule(request: Request, body: ScheduleRequest):
 
 @app.patch("/api/schedules/{schedule_id}")
 def update_schedule_enabled(request: Request, schedule_id: int, body: ScheduleEnabledRequest):
-    _require_platform_admin(request)
+    _require_min_role(request, "tenant_admin")
     org_db = _get_org_db(request)
     if not set_scan_schedule_enabled(org_db, schedule_id, body.enabled):
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -2784,7 +2785,7 @@ def update_schedule_enabled(request: Request, schedule_id: int, body: ScheduleEn
 
 @app.delete("/api/schedules/{schedule_id}")
 def remove_schedule(request: Request, schedule_id: int):
-    _require_platform_admin(request)
+    _require_min_role(request, "tenant_admin")
     org_db = _get_org_db(request)
     if not delete_scan_schedule(org_db, schedule_id):
         raise HTTPException(status_code=404, detail="Schedule not found")
@@ -2793,7 +2794,7 @@ def remove_schedule(request: Request, schedule_id: int):
 
 @app.post("/api/schedules/{schedule_id}/run")
 def run_schedule_now(request: Request, schedule_id: int):
-    _require_platform_admin(request)
+    _require_min_role(request, "tenant_admin")
     org_db = _get_org_db(request)
     schedule = get_scan_schedule(org_db, schedule_id)
     if not schedule:

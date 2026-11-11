@@ -2535,12 +2535,18 @@ def recon_subdomains(
 @app.get("/api/scans")
 def scans(request: Request, limit: int = 50):
     org_db = _get_org_db(request)
-    return {"items": get_scan_history(org_db, limit=limit)}
+    items = get_scan_history(org_db, limit=limit)
+    if _role_rank(_get_role(request)) < _role_rank("tenant_admin"):
+        for scan in items:
+            # Failed scans can include execution output in their error message.
+            scan.pop("error_message", None)
+    return {"items": items}
 
 
 @app.get("/api/scans/{scan_id}")
 def scan_detail(request: Request, scan_id: int):
     """Return scan metadata and recent execution logs for drill-down views."""
+    _require_min_role(request, "tenant_admin")
     org_db = _get_org_db(request)
     scan = get_scan_record(org_db, scan_id)
     if not scan:
@@ -2622,6 +2628,7 @@ def get_filtered_vulnerabilities(
 @app.get("/api/scans/{scan_id}/logs")
 def get_scan_logs_api(request: Request, scan_id: int, limit: int = 500):
     """Get execution logs for a specific scan."""
+    _require_min_role(request, "tenant_admin")
     org_db = _get_org_db(request)
     logs = get_scan_logs(org_db, scan_id, limit)
     return {"items": logs}
@@ -3732,6 +3739,7 @@ def admin_overview(request: Request):
 async def websocket_endpoint(websocket: WebSocket, scan_id: int):
     """WebSocket endpoint for real-time scan debug output."""
     try:
+        _require_min_role(websocket, "tenant_admin")
         org_db = _get_org_db(websocket)
     except HTTPException:
         await websocket.close(code=1008)

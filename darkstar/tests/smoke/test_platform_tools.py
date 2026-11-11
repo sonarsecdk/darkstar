@@ -1,10 +1,11 @@
-"""Platform tools reject tenant sessions and API keys before reading or writing data."""
+"""Administrative tools enforce permissions for sessions and API keys."""
 import base64
 import json
 
 import pytest
 from fastapi.testclient import TestClient
 from itsdangerous import TimestampSigner
+from starlette.websockets import WebSocketDisconnect
 
 from darkstar import webapp
 
@@ -86,3 +87,68 @@ def test_platform_admin_can_use_each_area(client, monkeypatch, auth_method):
     assert schema.status_code == 200 and '/api/scans/start' in schema.json()['paths']
     response = client.post('/api/scans/start', headers=headers, json={'targets': '192.0.2.1', 'scanner': 'openvas'})
     assert response.status_code == 200 and response.json()['scan_id'] == 42
+
+
+@pytest.mark.parametrize('auth_method', ['session', 'api_key'])
+@pytest.mark.parametrize('role', [None, 'viewer', 'security_analyst'])
+@pytest.mark.parametrize('path', ['/api/scans/1', '/api/scans/1/logs'])
+def test_scan_debug_requires_tenant_admin(client, role, auth_method, path):
+    response = client.get(path, headers=authenticate(client, role, auth_method))
+    assert response.status_code == (401 if role is None else 403), response.text
+
+
+@pytest.mark.parametrize('auth_method', ['session', 'api_key'])
+@pytest.mark.parametrize('role', [None, 'viewer', 'security_analyst'])
+def test_debug_stream_requires_tenant_admin(client, role, auth_method):
+    with pytest.raises(WebSocketDisconnect) as error:
+        with client.websocket_connect('/ws/scan/1', headers=authenticate(client, role, auth_method)):
+            pytest.fail('Non-admin connected to the debug stream')
+    assert error.value.code == 1008
+
+
+@pytest.mark.parametrize('auth_method', ['session', 'api_key'])
+@pytest.mark.parametrize('role', ['tenant_admin', 'platform_admin'])
+def test_admins_can_read_their_tenant_scan_debug(client, monkeypatch, role, auth_method):
+    headers = authenticate(client, role, auth_method)
+    scan = {'id': 1, 'scan_mode': 'quick'}
+    logs = [{'message': 'Scan completed'}]
+
+    def scan_record(org_db, scan_id):
+        assert org_db == 'tenant_a'
+        return scan if scan_id == 1 else None
+
+    def scan_logs(org_db, scan_id, limit):
+        assert (org_db, scan_id) == ('tenant_a', 1)
+        return logs
+
+    monkeypatch.setattr(webapp, 'get_scan_record', scan_record)
+    monkeypatch.setattr(webapp, 'get_scan_logs', scan_logs)
+    monkeypatch.setattr(webapp, 'get_scanner_job_for_scan', lambda org, scan_id: None)
+    response = client.get('/api/scans/1', headers=headers)
+    assert response.status_code == 200 and response.json()['logs'] == logs
+    assert client.get('/api/scans/1/logs', headers=headers).json() == {'items': logs}
+    assert client.get('/api/scans/2', headers=headers).status_code == 404
+    with client.websocket_connect('/ws/scan/1', headers=headers) as socket:
+        socket.send_text('ping')
+    with pytest.raises(WebSocketDisconnect) as error:
+        with client.websocket_connect('/ws/scan/2', headers=headers):
+            pytest.fail('Connected to a scan outside the current tenant')
+    assert error.value.code == 1008
+
+
+@pytest.mark.parametrize('auth_method', ['session', 'api_key'])
+@pytest.mark.parametrize('role', ['viewer', 'security_analyst', 'tenant_admin', 'platform_admin'])
+def test_scan_history_remains_readable(client, monkeypatch, role, auth_method):
+    def scan_history(org_db, limit):
+        assert org_db == 'tenant_a'
+        return [{'id': 1, 'status': 'failed', 'error_message': 'Scanner execution output'}]
+
+    monkeypatch.setattr(webapp, 'get_scan_history', scan_history)
+    response = client.get('/api/scans', headers=authenticate(client, role, auth_method))
+    assert response.status_code == 200 and response.json()['items'][0]['id'] == 1
+    scan = response.json()['items'][0]
+    assert scan['status'] == 'failed'
+    if role in ['tenant_admin', 'platform_admin']:
+        assert scan['error_message'] == 'Scanner execution output'
+    else:
+        assert 'error_message' not in scan

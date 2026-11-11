@@ -87,8 +87,9 @@ def _install_dashboard_mocks(page, base_url, role="tenant_admin"):
         html = html.replace('data-authenticated="false"', 'data-authenticated="true"')
         html = html.replace(
             'data-organization=""',
-            'data-organization="Acme Security" data-org-db="tenant_db"',
+            'data-organization="Acme Security"',
         )
+        html = html.replace('data-org-db=""', 'data-org-db="tenant_db"')
         html = html.replace('data-role=""', f'data-role="{role}"')
         route.fulfill(response=response, body=html)
 
@@ -778,9 +779,11 @@ def test_platform_navigation_and_scan_shortcuts_follow_role(darkstar_server, rol
             page.locator('[data-tab="surface"]').click()
             expect(page.locator('#bbotSubdomainRows')).to_contain_text('app.example.com')
             if can_scan:
+                expect(page.locator('#bbotSubdomainScanTypeInput')).to_be_visible()
                 expect(page.locator('#scanSelectedSubdomainsBtn')).to_be_visible()
                 expect(page.locator('.scan-subdomain-btn').first).to_be_visible()
             else:
+                expect(page.locator('#bbotSubdomainScanTypeInput')).to_be_hidden()
                 expect(page.locator('#scanSelectedSubdomainsBtn')).to_be_hidden()
                 expect(page.locator('#scanAllSubdomainsBtn')).to_be_hidden()
                 expect(page.locator('.scan-subdomain-btn')).to_have_count(0)
@@ -883,8 +886,197 @@ def test_members_see_their_organization_and_approved_targets(darkstar_server, ro
                 expect(page.locator('#approvedAssetRows')).to_contain_text(target)
             expect(page.locator('#approvedAssetRows')).to_contain_text('Network range')
             expect(page.locator('#approvedAssetRows')).to_contain_text('Domain wildcard')
+            if role in ['viewer', 'security_analyst']:
+                expect(page.locator('.approved-asset-choice')).to_have_count(0)
+                expect(page.locator('#scanApprovedAssetsBtn')).to_be_hidden()
             page.locator('#approvedAssetSearch').fill('EXAMPLE')
             expect(page.locator('#approvedAssetRows tr')).to_have_count(2)
+            assert mock_state['unexpected'] == []
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('role', ['tenant_admin', 'platform_admin'])
+@pytest.mark.parametrize('recurring', [False, True])
+def test_approved_assets_become_explicit_scan_targets(darkstar_server, role, recurring):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page()
+            mock_state = _install_dashboard_mocks(page, darkstar_server, role=role)
+            targets = ['192.0.2.1', '2001:db8::1', 'example.test', '192.0.2.0/24', '*.example.test']
+            page.route('**/api/scan-scope', lambda route: _json(route, {'items': [{'target': target} for target in targets]}))
+            page.goto(darkstar_server, wait_until='networkidle')
+            page.locator('[data-tab="assets"]').click()
+            expect(page.locator('.approved-asset-choice')).to_have_count(3)
+            page.locator('#selectAllApprovedAssetsBtn').click()
+            expect(page.locator('#approvedAssetSelectionCount')).to_have_text('3 selected')
+            page.locator('#scanApprovedAssetsBtn').click()
+            expect(page.locator('#targetsInput')).to_have_value('192.0.2.1\n2001:db8::1\nexample.test')
+            expect(page.locator('.scan-asset-choice:checked')).to_have_count(3)
+            page.locator('.scan-asset-choice[value="2001:db8::1"]').uncheck()
+            expect(page.locator('#targetsInput')).to_have_value('192.0.2.1\nexample.test')
+            expect(page.locator('#scanTargetCount')).to_have_text('2 targets')
+            for scanner, profile in [('openvas', 'network-policy'), ('zap', 'default')]:
+                field = page.locator('#scannerSelections fieldset').filter(has=page.locator(f'input[value="{scanner}"]'))
+                field.locator('input[type="checkbox"]').check()
+                field.locator('select').select_option(profile)
+            if recurring:
+                page.locator('#recurringScanInput').check()
+            page.locator('#scanForm button[type="submit"]').click()
+            if recurring:
+                expect(page.locator('#scanMessage')).to_have_text('Recurring scan created.')
+            else:
+                expect(page.locator('#debug-tab.active')).to_be_visible()
+            requests = mock_state['schedule_requests'] if recurring else mock_state['scan_requests']
+            assert len(requests) == 1
+            assert requests[0]['targets'] == '192.0.2.1\nexample.test'
+            assert requests[0]['selections'] == [
+                {'scanner': 'openvas', 'profile_id': 'network-policy'},
+                {'scanner': 'zap', 'profile_id': 'default'},
+            ]
+            assert mock_state['unexpected'] == []
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('result', ['empty', 'error', 'removed'])
+def test_asset_selection_handles_missing_approvals(darkstar_server, result):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page()
+            mock_state = _install_dashboard_mocks(page, darkstar_server, role='tenant_admin')
+            targets = ['192.0.2.1'] if result == 'removed' else []
+            page.route('**/api/scan-scope', lambda route: _json(route,
+                {'detail': 'Scope unavailable'} if result == 'error' else {'items': [{'target': target} for target in targets]},
+                status=503 if result == 'error' else 200))
+            page.goto(darkstar_server, wait_until='networkidle')
+            page.locator('[data-tab="assets"]').click()
+            if result == 'removed':
+                page.locator('.approved-asset-choice').check()
+                targets.clear()
+                page.locator('#scanApprovedAssetsBtn').click()
+                expect(page.locator('#scanMessage')).to_contain_text('could not be verified')
+                expect(page.locator('#targetsInput')).to_have_value('')
+            else:
+                expect(page.locator('#approvedAssetsMessage')).to_contain_text('Scope unavailable' if result == 'error' else 'No targets are approved')
+                expect(page.locator('#scanApprovedAssetsBtn')).to_be_disabled()
+                page.locator('[data-tab="scan"]').click()
+            expect(page.locator('#selectAllScanAssetsBtn')).to_be_disabled()
+            assert mock_state['scan_requests'] == []
+            assert mock_state['unexpected'] == []
+        finally:
+            browser.close()
+
+
+def test_organization_switch_discards_old_assets_and_identity(darkstar_server):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page()
+            mock_state = _install_dashboard_mocks(page, darkstar_server, role='tenant_admin')
+            active_org = 'tenant_db'
+            hold_old = False
+            old_scope, old_identity, switches = [], [], []
+            def identity():
+                return {'authenticated': True, 'organization': 'Alpha' if active_org == 'tenant_db' else 'Beta',
+                        'org_db': active_org, 'role': 'tenant_admin',
+                        'organizations': [{'org_db_name': org, 'org_name': name} for org, name in [('tenant_db', 'Alpha'), ('other_tenant', 'Beta')]]}
+            def me(route):
+                if hold_old and active_org == 'tenant_db':
+                    old_identity.append((route, identity()))
+                else:
+                    _json(route, identity())
+            def scope(route):
+                if hold_old and active_org == 'tenant_db':
+                    old_scope.append(route)
+                else:
+                    _json(route, {'items': [{'target': '192.0.2.1' if active_org == 'tenant_db' else '198.51.100.1'}]})
+            def switch(route):
+                nonlocal active_org
+                active_org = route.request.post_data_json['org_db']
+                switches.append(route)
+            page.route('**/api/me', me)
+            page.route('**/api/scan-scope', scope)
+            page.route('**/api/auth/select-organization', switch)
+            page.goto(darkstar_server, wait_until='networkidle')
+            page.locator('[data-tab="assets"]').click()
+            expect(page.locator('#approvedAssetRows')).to_contain_text('192.0.2.1')
+            hold_old = True
+            with page.expect_request('**/api/scan-scope'):
+                page.locator('#refreshApprovedAssetsBtn').click()
+            with page.expect_request('**/api/me'):
+                page.evaluate('() => { void refreshDashboard(); }')
+            with page.expect_request('**/api/auth/select-organization'):
+                page.locator('#tenantSwitchSelect').select_option('other_tenant')
+            expect(page.locator('#approvedAssetRows')).to_have_text('')
+            # The cookie can change while the switch response is still pending.
+            page.locator('[data-tab="scan"]').click()
+            page.locator('#targetsInput').fill('198.51.100.1')
+            page.locator('#modeInput').select_option('1')
+            page.locator('#scanForm button[type="submit"]').click()
+            assert mock_state['scan_requests'] == []
+            _json(switches.pop(), identity())
+            expect(page.locator('#topOrganizationName')).to_have_text('Beta')
+            expect(page.locator('#dashboard-tab.active')).to_be_visible()
+            expect(page.locator('#targetsInput')).to_have_value('')
+            page.locator('[data-tab="assets"]').click()
+            expect(page.locator('#approvedAssetRows')).to_contain_text('198.51.100.1')
+            with page.expect_response('**/api/scan-scope'):
+                _json(old_scope.pop(), {'items': [{'target': '192.0.2.1'}]})
+            with page.expect_response('**/api/me'):
+                route, payload = old_identity.pop()
+                _json(route, payload)
+            page.evaluate('() => new Promise(resolve => requestAnimationFrame(resolve))')
+            expect(page.locator('#topOrganizationName')).to_have_text('Beta')
+            expect(page.locator('#approvedAssetRows')).not_to_contain_text('192.0.2.1')
+            expect(page.locator('#approvedAssetRows')).to_contain_text('198.51.100.1')
+            assert mock_state['unexpected'] == []
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize('tab', ['assets', 'scan'])
+def test_identity_refresh_clears_previous_organization_assets(darkstar_server, tab):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page()
+            mock_state = _install_dashboard_mocks(page, darkstar_server, role='tenant_admin')
+            active_org = 'tenant_db'
+            page.route('**/api/me', lambda route: _json(route, {
+                'authenticated': True, 'organization': 'Alpha' if active_org == 'tenant_db' else 'Beta',
+                'org_db': active_org, 'role': 'tenant_admin',
+            }))
+            page.route('**/api/scan-scope', lambda route: _json(route, {'items': [{
+                'target': '192.0.2.1' if active_org == 'tenant_db' else '198.51.100.1',
+            }]}))
+            page.goto(darkstar_server, wait_until='networkidle')
+            page.locator(f'[data-tab="{tab}"]').click()
+            expect(page.locator('#approvedAssetRows')).to_contain_text('192.0.2.1')
+            if tab == 'scan':
+                page.locator('.scan-asset-choice').check()
+                expect(page.locator('#targetsInput')).to_have_value('192.0.2.1')
+            # A second browser tab changes the session; this tab discovers it via /api/me.
+            active_org = 'other_tenant'
+            page.evaluate('() => refreshDashboard()')
+            expect(page.locator('#topOrganizationName')).to_have_text('Beta')
+            expect(page.locator('#dashboard-tab.active')).to_be_visible()
+            expect(page.locator('#approvedAssetRows')).to_have_text('')
+            expect(page.locator('#targetsInput')).to_have_value('')
+            page.locator('[data-tab="assets"]').click()
+            expect(page.locator('#approvedAssetRows')).to_contain_text('198.51.100.1')
+            expect(page.locator('#approvedAssetRows')).not_to_contain_text('192.0.2.1')
+            assert mock_state['scan_requests'] == []
             assert mock_state['unexpected'] == []
         finally:
             browser.close()

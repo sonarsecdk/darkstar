@@ -328,6 +328,15 @@ body {
     text-align: center;
 }
 
+.header-center {
+    min-width: 0;
+    max-width: 100%;
+}
+
+#topOrganizationName {
+    overflow-wrap: anywhere;
+}
+
 .org-info span {
     font-size: 14px;
     color: var(--color-text-secondary);

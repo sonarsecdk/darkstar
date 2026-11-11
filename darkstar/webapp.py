@@ -1527,6 +1527,7 @@ def index(request: Request):
             "theme": _page_theme(request),
             "logged_in": bool(request.session.get("org_db")),
             "organization": request.session.get("organization", ""),
+            "org_db": request.session.get("org_db", ""),
             "role": request.session.get("role", ""),
         },
     )

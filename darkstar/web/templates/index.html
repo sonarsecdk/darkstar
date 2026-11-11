@@ -7,10 +7,10 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/static/css/app.css?v=20261022-profiles" />
+    <link rel="stylesheet" href="/static/css/app.css?v=20261111-customer-assets" />
     <link rel="stylesheet" href="/static/css/themes.css?v=20261012" />
 </head>
-<body data-authenticated="{{ 'true' if logged_in else 'false' }}" data-organization="{{ organization }}" data-role="{{ role }}">
+<body data-authenticated="{{ 'true' if logged_in else 'false' }}" data-organization="{{ organization }}" data-org-db="{{ org_db }}" data-role="{{ role }}">
     <!-- Login Screen -->
     <div id="loginScreen" class="login-screen">
         <div class="login-container">
@@ -69,14 +69,10 @@
             </div>
             <div class="header-center">
                 <div class="org-info cyber-status-pill">
-                    <span>Live attack-surface radar</span>
+                    <span>Organization: <strong id="topOrganizationName">{{ organization }}</strong></span>
                 </div>
             </div>
             <div class="header-right">
-                <div class="header-chip">
-                    <span class="chip-label">Organization</span>
-                    <span id="topOrganizationName">{{ organization }}</span>
-                </div>
                 <div id="tenantSwitchGroup" class="header-chip hidden">
                     <span class="chip-label">Tenant</span>
                     <select id="tenantSwitchSelect" class="header-select"></select>
@@ -378,7 +374,7 @@
                             <label for="bbotSubdomainSearchInput">Search subdomains</label>
                             <input id="bbotSubdomainSearchInput" type="text" placeholder="subdomain, URL, IP, tag" />
                         </div>
-                        <div class="filter-group admin-only hidden">
+                        <div class="filter-group tenant-admin-only hidden">
                             <label for="bbotSubdomainScanTypeInput">Scan as</label>
                             <select id="bbotSubdomainScanTypeInput" class="filter-select">
                                 <option value="mode:2">Normal scan</option>
@@ -679,9 +675,14 @@
                     </div>
                     <p>Network ranges and wildcard rules describe permissions; they are not lists of discovered hosts.</p>
                     <p id="approvedAssetsMessage" class="form-message" role="status"></p>
+                    <div class="tenant-admin-only hidden">
+                        <button id="selectAllApprovedAssetsBtn" type="button" class="btn-secondary btn-sm">Select visible IPs and domains</button>
+                        <button id="scanApprovedAssetsBtn" type="button" class="btn-primary btn-sm" disabled>Scan selected</button>
+                        <span id="approvedAssetSelectionCount" role="status">0 selected</span>
+                    </div>
                     <div class="table-container">
-                        <table>
-                            <thead><tr><th>Target</th><th>Type</th></tr></thead>
+                        <table class="data-table">
+                            <thead><tr><th class="tenant-admin-only hidden">Select</th><th>Target</th><th>Type</th></tr></thead>
                             <tbody id="approvedAssetRows"></tbody>
                         </table>
                     </div>
@@ -698,9 +699,17 @@
                             (see Settings &rarr; Scanner appliances, or the Internal Scanners documentation).
                         </div>
                         <form id="scanForm" class="form-vertical">
+                            <fieldset class="form-group">
+                                <legend>Approved assets</legend>
+                                <p class="field-hint">Select IPs and domains from Allowed scan targets in Settings. Network ranges and wildcard rules are not expanded into hosts.</p>
+                                <div id="scanAssetChoices"></div>
+                                <button id="selectAllScanAssetsBtn" type="button" class="btn-secondary btn-sm" disabled>Select all IPs and domains</button>
+                            </fieldset>
                             <div class="form-group">
                                 <label for="targetsInput">Targets</label>
                                 <textarea id="targetsInput" name="targets" placeholder="example.com, 192.168.1.0/24" rows="3" required></textarea>
+                                <small class="field-hint">You can also enter an approved target, such as a URL or network range. Every target and resolved IP must be approved for this organization.</small>
+                                <span id="scanTargetCount" role="status">0 targets</span>
                             </div>
                             <div class="form-group">
                                 <label for="scanNameInput">Scan Name</label>

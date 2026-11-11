@@ -201,7 +201,7 @@ function dateInputToIso(elementId, endOfDay = false) {
 function scannerApplianceLabel(node) {
     if (!node) return "Auto";
     const name = node.name || node.node_id || "scanner";
-    const status = node.status || "unknown";
+    const status = node.status === "registered" && !node.last_seen_at ? "not connected" : node.status || "unknown";
     return `${name} (${status}, ${node.running_jobs ?? 0} active jobs; capacity ${node.max_parallel_jobs ?? 1})`;
 }
 
@@ -241,13 +241,14 @@ async function loadScannerApplianceOptions() {
         select.innerHTML = [
             '<option value="">Auto - any available appliance</option>',
             ...state.scannerAppliances.map(node => `
-                <option value="${escapeHtml(node.node_id)}">${escapeHtml(scannerApplianceLabel(node))}</option>
+                <option value="${escapeHtml(node.node_id)}" ${node.status === 'registered' && !node.last_seen_at ? 'disabled' : ''}>${escapeHtml(scannerApplianceLabel(node))}</option>
             `),
         ].join("");
-        if (currentValue && state.scannerAppliances.some(node => node.node_id === currentValue)) {
+        const activeNodes = state.scannerAppliances.filter(scannerNodeIsActive);
+        if (currentValue && state.scannerAppliances.some(node => node.node_id === currentValue && !(node.status === 'registered' && !node.last_seen_at))) {
             select.value = currentValue;
-        } else if (state.scannerAppliances.length === 1) {
-            select.value = state.scannerAppliances[0].node_id;
+        } else if (activeNodes.length === 1) {
+            select.value = activeNodes[0].node_id;
         }
     } catch (error) {
         console.warn("Failed to load scanner appliances:", error);
@@ -299,7 +300,7 @@ async function loadScannerProfiles() {
         if (version !== state.scannerCatalogVersion || state.orgDb !== orgDb) return;
         container.innerHTML = '';
         if (!catalog.scanners.length) {
-            container.textContent = 'This appliance has not reported any installed profiles yet.';
+            container.textContent = 'This appliance has not reported any installed profiles yet. Check that its worker is connected, then reopen Scan Center to retry.';
             return;
         }
         catalog.scanners.forEach(scanner => {

@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -298,7 +299,7 @@ def _install_dashboard_mocks(page, base_url, role="tenant_admin"):
         if path == "/api/scanner-nodes/available":
             _json(
                 route,
-                {"items": [{"node_id": "node-1", "name": "Office scanner", "status": "online", "running_jobs": 0, "max_parallel_jobs": 2}]},
+                {"items": [{"node_id": "node-1", "name": "Office scanner", "status": "online", "last_seen_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(), "running_jobs": 0, "max_parallel_jobs": 2}]},
             )
             return
         if path == "/api/schedules" and method == "GET":
@@ -864,7 +865,7 @@ def test_profile_catalog_deduplicates_pending_loads_and_retries_empty_catalog(da
             page.evaluate('() => new Promise(resolve => requestAnimationFrame(resolve))')
             assert len(catalog_requests) == 1
             _json(catalog_requests[0], {'items': [], 'scanners': [], 'total': 0})
-            expect(page.locator('#scannerSelections')).to_have_text('This appliance has not reported any installed profiles yet.')
+            expect(page.locator('#scannerSelections')).to_contain_text('This appliance has not reported any installed profiles yet.')
             with page.expect_response('**/api/scanner-nodes/node-1/profiles?limit=1'):
                 page.locator('[data-tab="scan"]').click()
             assert len(catalog_requests) == 2
@@ -873,6 +874,34 @@ def test_profile_catalog_deduplicates_pending_loads_and_retries_empty_catalog(da
             expect(openvas.locator('select option')).to_have_count(2)
             openvas.locator('select').select_option('network-policy')
             expect(openvas.locator('select')).to_have_value('network-policy')
+            assert mock_state['scan_requests'] == []
+            assert mock_state['unexpected'] == []
+        finally:
+            browser.close()
+
+
+def test_connected_appliance_is_selected_instead_of_unattached_registration(darkstar_server):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page()
+            mock_state = _install_dashboard_mocks(page, darkstar_server, role='platform_admin')
+            page.route('**/api/scanner-nodes/available', lambda route: _json(route, {'items': [
+                {'node_id': 'unattached', 'name': 'openvas', 'status': 'registered', 'last_seen_at': None},
+                {'node_id': 'node-1', 'name': 'local-scanner', 'status': 'online',
+                 'last_seen_at': datetime.now(timezone.utc).replace(tzinfo=None).isoformat()},
+            ]}))
+            page.goto(darkstar_server, wait_until='networkidle')
+            page.locator('[data-tab="scan"]').click()
+            expect(page.locator('#applianceInput')).to_have_value('node-1')
+            expect(page.locator('#applianceInput option[value="unattached"]')).to_be_disabled()
+            expect(page.locator('#applianceInput option[value="unattached"]')).to_contain_text('not connected')
+            page.locator('#scannerInput').select_option('openvas')
+            openvas = page.locator('#scannerSelections fieldset').filter(has=page.locator('input[value="openvas"]'))
+            expect(openvas.locator('select')).to_be_visible()
+            expect(openvas.locator('select option')).to_have_count(2)
             assert mock_state['scan_requests'] == []
             assert mock_state['unexpected'] == []
         finally:

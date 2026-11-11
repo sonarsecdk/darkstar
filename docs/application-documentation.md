@@ -517,8 +517,9 @@ Monthly:
 
 ### Scanner selections and installed profiles
 
-Scan Center can run several scanners as one scan. A sole appliance is selected
-automatically. Selecting OpenVAS from Individual Scanner opens its installed
+Scan Center can run several scanners as one scan. A sole connected appliance is selected
+automatically. Registering an appliance only creates its identity and attach token;
+it must run a worker before it can be selected or report installed profiles. Selecting OpenVAS from Individual Scanner opens its installed
 policy selector; choose a policy before launching. The appliance status shows
 active jobs and capacity (for example, 0 active jobs; capacity 1 means idle).
 Choose an appliance, tick the

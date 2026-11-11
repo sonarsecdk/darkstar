@@ -96,7 +96,7 @@
             <button class="tab-button" data-tab="vulns">Vulnerabilities</button>
             <button class="tab-button" data-tab="surface">Attack Surface</button>
             <button class="tab-button admin-only hidden" data-tab="endpoints">Endpoints</button>
-            <button class="tab-button admin-only hidden" data-tab="scan">Scan Center</button>
+            <button class="tab-button tenant-admin-only hidden" data-tab="scan">Scan Center</button>
             <button class="tab-button" data-tab="settings">Settings</button>
             <button class="tab-button admin-only hidden" data-tab="m365">Cloud Security</button>
             <a class="documentation-link admin-only hidden" href="/documentation" target="_blank" rel="noopener">Documentation</a>
@@ -116,7 +116,7 @@
                         <h2>Vulnerability intelligence, attack surface management</h2>
                     </div>
                     <div class="hero-actions">
-                        <button class="btn-primary admin-only hidden" type="button" data-tab-shortcut="scan">Start scan</button>
+                        <button class="btn-primary tenant-admin-only hidden" type="button" data-tab-shortcut="scan">Start scan</button>
                         <button class="btn-secondary" type="button" data-tab-shortcut="surface">Attack surface</button>
                     </div>
                 </section>
@@ -364,8 +364,8 @@
                     <div class="card-header">
                         Found Subdomains
                         <span>
-                            <button type="button" id="scanSelectedSubdomainsBtn" class="btn-secondary btn-sm admin-only hidden">Scan selected</button>
-                            <button type="button" id="scanAllSubdomainsBtn" class="btn-secondary btn-sm admin-only hidden">Scan all subdomains</button>
+                            <button type="button" id="scanSelectedSubdomainsBtn" class="btn-secondary btn-sm tenant-admin-only hidden">Scan selected</button>
+                            <button type="button" id="scanAllSubdomainsBtn" class="btn-secondary btn-sm tenant-admin-only hidden">Scan all subdomains</button>
                         </span>
                     </div>
                     <div class="filter-grid">

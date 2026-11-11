@@ -755,20 +755,29 @@ def test_platform_navigation_and_scan_shortcuts_follow_role(darkstar_server, rol
             mock_state = _install_dashboard_mocks(page, darkstar_server, role=role)
             page.goto(darkstar_server, wait_until='networkidle')
             admin = role == 'platform_admin'
-            for selector in ['[data-tab="scan"]', '[data-tab="endpoints"]', '[data-tab="m365"]',
-                             'a[href="/documentation"]', '[data-tab-shortcut="scan"]']:
+            can_scan = role in ['tenant_admin', 'platform_admin']
+            for selector in ['[data-tab="endpoints"]', '[data-tab="m365"]', 'a[href="/documentation"]']:
                 if admin:
                     expect(page.locator(selector)).to_be_visible()
                 else:
                     expect(page.locator(selector)).to_be_hidden()
             if not admin:
-                for tab in ['scan', 'schedules', 'endpoints', 'm365', 'docs']:
+                for tab in ['endpoints', 'm365', 'docs']:
+                    page.evaluate('(tab) => switchTab(tab)', tab)
+                    expect(page.locator('#dashboard-tab')).to_have_class('tab-panel active')
+            for selector in ['[data-tab="scan"]', '[data-tab-shortcut="scan"]']:
+                if can_scan:
+                    expect(page.locator(selector)).to_be_visible()
+                else:
+                    expect(page.locator(selector)).to_be_hidden()
+            if not can_scan:
+                for tab in ['scan', 'schedules']:
                     page.evaluate('(tab) => switchTab(tab)', tab)
                     expect(page.locator('#dashboard-tab')).to_have_class('tab-panel active')
                 expect(page.locator('.stop-scan-btn')).to_have_count(0)
             page.locator('[data-tab="surface"]').click()
             expect(page.locator('#bbotSubdomainRows')).to_contain_text('app.example.com')
-            if admin:
+            if can_scan:
                 expect(page.locator('#scanSelectedSubdomainsBtn')).to_be_visible()
                 expect(page.locator('.scan-subdomain-btn').first).to_be_visible()
             else:

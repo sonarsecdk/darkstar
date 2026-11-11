@@ -235,7 +235,7 @@ function updateScanWorkerWarning() {
 
 async function loadScannerApplianceOptions() {
     const select = document.getElementById("applianceInput");
-    if (!select || !state.authenticated || state.role !== "platform_admin") return;
+    if (!select || !state.authenticated || !canManageScans() || state.tenantSwitchPending) return;
     const currentValue = select.value;
     try {
         const result = await requestJson("/api/scanner-nodes/available");
@@ -1442,7 +1442,12 @@ function roleRank(role) {
     }[role || "viewer"] || 0;
 }
 
-const PLATFORM_TABS = new Set(["scan", "schedules", "endpoints", "m365", "docs", "oversight"]);
+const PLATFORM_TABS = new Set(["endpoints", "m365", "docs", "oversight"]);
+const TENANT_TABS = new Set(["scan", "schedules", "debug"]);
+
+function canManageScans() {
+    return roleRank(state.role) >= roleRank("tenant_admin");
+}
 
 function canViewDebug() {
     return roleRank(state.role) >= roleRank("tenant_admin");
@@ -1454,7 +1459,7 @@ function applyRoleUI() {
     const isTenantAdmin = roleRank(state.role) >= roleRank("tenant_admin");
     const canWrite = roleRank(state.role) >= roleRank("security_analyst");
     if (!isTenantAdmin) {
-        if (state.currentTab === "debug") switchTab("dashboard");
+        if (TENANT_TABS.has(state.currentTab)) switchTab("dashboard");
         if (state.selectedScanId) closeDetailDrawer();
         stopDebugStream();
         state.debugLogs = [];
@@ -1467,7 +1472,8 @@ function applyRoleUI() {
         el.classList.toggle("hidden", !isTenantAdmin);
     });
     document.querySelectorAll(".write-action").forEach(el => {
-        const allowed = canWrite && (!el.classList.contains("admin-only") || isPlatformAdmin);
+        const allowed = canWrite && (!el.classList.contains("admin-only") || isPlatformAdmin) &&
+            (!el.classList.contains("tenant-admin-only") || isTenantAdmin);
         el.disabled = !allowed;
         el.classList.toggle("hidden", !allowed);
     });
@@ -1559,7 +1565,7 @@ function handleAuthStep(result) {
 // Returns a Promise that resolves once the tab's data has loaded.
 function switchTab(tabName) {
     if (PLATFORM_TABS.has(tabName) && state.role !== "platform_admin") tabName = "dashboard";
-    if (tabName === "debug" && !canViewDebug()) tabName = "dashboard";
+    if (TENANT_TABS.has(tabName) && !canManageScans()) tabName = "dashboard";
     document.querySelectorAll(".tab-panel").forEach(tab => tab.classList.remove("active"));
     document.querySelectorAll(".tab-button").forEach(btn => btn.classList.remove("active"));
 
@@ -1636,7 +1642,7 @@ function renderActiveScans(items) {
                 ${escapeHtml(formatScanMode(scan.scan_mode))} &middot;
                 ${statusBadge(scan.status)}
             </div>
-            ${state.role === "platform_admin" ? `<button class="btn-danger btn-sm stop-scan-btn" data-scan-id="${scan.id}">Stop</button>` : ""}
+            ${canManageScans() ? `<button class="btn-danger btn-sm stop-scan-btn" data-scan-id="${scan.id}">Stop</button>` : ""}
         </div>
     `).join("");
 }
@@ -1658,7 +1664,7 @@ function renderScans(items) {
                     <td>${escapeHtml(formatScanMode(scan.scan_mode))}</td>
                     <td>${statusBadge(scan.status)}</td>
                     <td><span class="date-text">${escapeHtml(formatDateTime(scan.created_at))}</span></td>
-                    <td>${state.role === "platform_admin" && ["running", "queued", "stopping"].includes(status) ? `<button class="btn-danger btn-sm stop-scan-btn" data-scan-id="${scan.id}">Stop</button>` : "-"}</td>
+                    <td>${canManageScans() && ["running", "queued", "stopping"].includes(status) ? `<button class="btn-danger btn-sm stop-scan-btn" data-scan-id="${scan.id}">Stop</button>` : "-"}</td>
                 </tr>
             `;
         })
@@ -2092,7 +2098,7 @@ async function loadBbotSubdomainsView() {
                     <td>${compactList(item.sources, 3)}</td>
                     <td>${compactList(item.tags, 4)}</td>
                     <td>${escapeHtml(formatDateTime(item.last_seen))}</td>
-                    <td>${state.role === "platform_admin" ? `<button type="button" class="btn-secondary btn-sm scan-subdomain-btn" data-target="${escapeHtml(target)}">Scan</button>` : ""}</td>
+                    <td>${canManageScans() ? `<button type="button" class="btn-secondary btn-sm scan-subdomain-btn" data-target="${escapeHtml(target)}">Scan</button>` : ""}</td>
                 </tr>
             `;
         }).join("") || '<tr><td colspan="9">No BBot subdomains found yet.</td></tr>';
@@ -2110,7 +2116,7 @@ function subdomainScanSelection() {
 }
 
 async function startBbotSubdomainScan(targets, label = "BBot target scan") {
-    if (state.role !== "platform_admin") return;
+    if (!canManageScans() || state.tenantSwitchPending) return;
     const message = document.getElementById("bbotSubdomainMessage");
     const cleanTargets = [...new Set((targets || []).map(item => String(item || "").trim()).filter(Boolean))];
     if (!cleanTargets.length) {
@@ -2340,6 +2346,7 @@ function renderEndpointVulnerabilities(items) {
 // ============================================================================
 
 async function loadSchedulesView() {
+    if (!canManageScans() || state.tenantSwitchPending) return;
     try {
         const [result, appliances] = await Promise.all([
             requestJson("/api/schedules"),
@@ -3228,7 +3235,7 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
 // Scan form
 document.getElementById("scanForm").addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (state.role !== "platform_admin") return;
+    if (!canManageScans() || state.tenantSwitchPending) return;
     const scanMessage = document.getElementById("scanMessage");
     scanMessage.textContent = "";
 
@@ -3378,6 +3385,7 @@ document.addEventListener("click", async (event) => {
 
     const stopBtn = event.target.closest(".stop-scan-btn");
     if (stopBtn) {
+        if (!canManageScans() || state.tenantSwitchPending) return;
         await requestJson(`/api/scans/${stopBtn.dataset.scanId}/stop`, { method: "POST" });
         await refreshDashboard();
         return;
@@ -3427,6 +3435,7 @@ document.addEventListener("click", async (event) => {
 
     const runScheduleBtn = event.target.closest(".run-schedule-btn");
     if (runScheduleBtn) {
+        if (!canManageScans() || state.tenantSwitchPending) return;
         const result = await requestJson(`/api/schedules/${runScheduleBtn.dataset.scheduleId}/run`, { method: "POST" });
         await refreshDashboard();
         await switchTab("debug");
@@ -3437,6 +3446,7 @@ document.addEventListener("click", async (event) => {
 
     const toggleScheduleBtn = event.target.closest(".toggle-schedule-btn");
     if (toggleScheduleBtn) {
+        if (!canManageScans() || state.tenantSwitchPending) return;
         await requestJson(`/api/schedules/${toggleScheduleBtn.dataset.scheduleId}`, {
             method: "PATCH",
             body: JSON.stringify({ enabled: toggleScheduleBtn.dataset.enabled === "true" }),
@@ -3447,6 +3457,7 @@ document.addEventListener("click", async (event) => {
 
     const deleteScheduleBtn = event.target.closest(".delete-schedule-btn");
     if (deleteScheduleBtn) {
+        if (!canManageScans() || state.tenantSwitchPending) return;
         await requestJson(`/api/schedules/${deleteScheduleBtn.dataset.scheduleId}`, { method: "DELETE" });
         await loadSchedulesView();
         return;

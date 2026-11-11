@@ -42,12 +42,13 @@ def test_members_can_read_scope(api, role):
 
 
 @pytest.mark.parametrize('path', ['/api/scans/start', '/api/schedules'])
+@pytest.mark.parametrize('role', ['tenant_admin', 'platform_admin'])
 @pytest.mark.parametrize('targets', ['outside.test', '192.0.2.2', 'https://sub.example.test', '192.0.2.0/24'])
-def test_manual_and_scheduled_scans_reject_unapproved_targets(api, monkeypatch, path, targets):
+def test_manual_and_scheduled_scans_reject_unapproved_targets(api, monkeypatch, path, role, targets):
     create = Mock()
     monkeypatch.setattr(webapp, 'create_scan_record', create)
     monkeypatch.setattr(webapp, 'create_scan_schedule', create)
-    response = api.post(path, headers={'Authorization': 'Bearer platform_admin'}, json={'targets': targets, 'scanner': 'nuclei'})
+    response = api.post(path, headers={'Authorization': 'Bearer ' + role}, json={'targets': targets, 'scanner': 'nuclei'})
     assert response.status_code == 403
     create.assert_not_called()
 
@@ -63,6 +64,28 @@ def test_changed_dns_blocks_previously_queued_job(api, monkeypatch):
     assert response.json()['job'] is None
     assert complete.call_args.args[:3] == (42, 'node-a', 'failed')
     assert 'unapproved IP 192.0.2.2' in complete.call_args.args[3]
+
+
+def test_tenant_cannot_select_another_organizations_scope(api, monkeypatch):
+    targets = {'tenant_db': '192.0.2.1', 'other_tenant': '198.51.100.1'}
+    monkeypatch.setattr(webapp, 'get_allowed_scan_targets', lambda org: [{'target': targets[org]}])
+    headers = {'Authorization': 'Bearer tenant_admin'}
+    assert api.get('/api/scan-scope?org_db=other_tenant', headers=headers).json()['items'] == [{'target': '192.0.2.1'}]
+    create = Mock()
+    monkeypatch.setattr(webapp, 'create_scan_record', create)
+    response = api.post('/api/scans/start', headers=headers, json={
+        'targets': '198.51.100.1', 'scanner': 'nuclei', 'org_db': 'other_tenant',
+    })
+    assert response.status_code == 403
+    create.assert_not_called()
+
+
+@pytest.mark.parametrize('path', ['/api/scans/start', '/api/schedules'])
+def test_tenant_scan_checks_current_dns_addresses(api, monkeypatch, path):
+    monkeypatch.setattr(scan_scope.socket, 'getaddrinfo', lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('192.0.2.2', 0))])
+    response = api.post(path, headers={'Authorization': 'Bearer tenant_admin'}, json={'targets': 'example.test', 'scanner': 'nuclei'})
+    assert response.status_code == 403
+    assert 'unapproved IP 192.0.2.2' in response.json()['detail']
 
 
 def test_empty_scope_blocks_existing_scheduled_targets(api, monkeypatch):

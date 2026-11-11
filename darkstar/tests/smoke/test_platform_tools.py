@@ -16,15 +16,19 @@ READ_PATHS = [
     '/api/endpoints/agents', '/api/endpoints/agents/agent-a',
     '/api/endpoints/network-map', '/api/endpoints/software',
     '/api/endpoints/vulnerabilities', '/api/endpoints/vulnerabilities/1',
-    '/api/scanner-nodes', '/api/scanner-nodes/available', '/api/scanner-nodes/node-a/profiles',
-    '/api/schedules', '/api/integrations/m365/settings', '/api/integrations/m365/secure-score',
+    '/api/scanner-nodes', '/api/integrations/m365/settings', '/api/integrations/m365/secure-score',
 ]
-WRITE_ROUTES = [
+SCAN_ROUTES = [
+    ('GET', '/api/scanner-nodes/available', None),
+    ('GET', '/api/scanner-nodes/node-a/profiles', None),
+    ('GET', '/api/schedules', None),
     ('POST', '/api/scans/start', {'targets': '192.0.2.1', 'scanner': 'openvas'}),
     ('POST', '/api/scans/1/stop', {}),
     ('POST', '/api/schedules', {'targets': '192.0.2.1', 'scanner': 'openvas'}),
     ('PATCH', '/api/schedules/1', {'enabled': False}),
     ('DELETE', '/api/schedules/1', None), ('POST', '/api/schedules/1/run', {}),
+]
+WRITE_ROUTES = [
     ('POST', '/api/scanner-nodes', {'name': 'Test scanner'}),
     ('DELETE', '/api/scanner-nodes/node-a', None),
     ('DELETE', '/api/scanner-nodes/node-a/record', None),
@@ -52,14 +56,14 @@ def client(monkeypatch):
         yield client
 
 
-def authenticate(client, role, method):
+def authenticate(client, role, method, org_db='tenant_a'):
     if role is None:
         return {}
     if method == 'api_key':
         return {'Authorization': f'Bearer {role}'}
     middleware = next(item for item in webapp.app.user_middleware if item.cls.__name__ == 'SessionMiddleware')
     signer = TimestampSigner(str(middleware.kwargs['secret_key']))
-    session = {'org_db': 'tenant_a', 'org_id': 7, 'role': role}
+    session = {'org_db': org_db, 'org_id': 7, 'role': role}
     client.cookies.set('session', signer.sign(base64.b64encode(json.dumps(session).encode())).decode())
     return {}
 
@@ -70,6 +74,51 @@ def authenticate(client, role, method):
 def test_platform_tools_reject_non_platform_roles(client, role, auth_method, method, path, body):
     response = client.request(method, path, headers=authenticate(client, role, auth_method), json=body)
     assert response.status_code == (401 if role is None else 403), response.text
+
+
+@pytest.mark.parametrize('auth_method', ['session', 'api_key'])
+@pytest.mark.parametrize('role', [None, 'viewer', 'security_analyst'])
+@pytest.mark.parametrize('method,path,body', SCAN_ROUTES)
+def test_scan_controls_require_tenant_admin(client, role, auth_method, method, path, body):
+    response = client.request(method, path, headers=authenticate(client, role, auth_method), json=body)
+    assert response.status_code == (401 if role is None else 403), response.text
+
+
+@pytest.mark.parametrize('auth_method', ['session', 'api_key'])
+@pytest.mark.parametrize('role', ['tenant_admin', 'platform_admin'])
+@pytest.mark.parametrize('org_db', ['tenant_a', 'tenant_b'])
+def test_scan_controls_use_authenticated_organization(client, monkeypatch, role, auth_method, org_db):
+    monkeypatch.setattr(webapp, 'authenticate_api_key', lambda token: {
+        'org_id': 7, 'org_db_name': org_db, 'role': role,
+    })
+    headers = authenticate(client, role, auth_method, org_db)
+    calls = []
+    monkeypatch.setattr(webapp, '_queue_scan', lambda org, body, **kw: calls.append(org) or 42)
+    monkeypatch.setattr(webapp, 'get_scan_schedules', lambda org: [{'organization': org}])
+    monkeypatch.setattr(webapp, 'get_scan_record', lambda org, scan_id: calls.append(org))
+    monkeypatch.setattr(webapp, 'get_scan_schedule', lambda org, scan_id: calls.append(org))
+    monkeypatch.setattr(webapp, 'set_scan_schedule_enabled', lambda org, *args: calls.append(org) or False)
+    monkeypatch.setattr(webapp, 'delete_scan_schedule', lambda org, *args: calls.append(org) or False)
+    response = client.post('/api/scans/start', headers=headers, json={'targets': '192.0.2.1', 'scanner': 'nuclei'})
+    assert response.status_code == 200
+    assert client.get('/api/schedules', headers=headers).json()['items'] == [{'organization': org_db}]
+    for method, path, body in [
+        ('POST', '/api/scans/99/stop', {}), ('POST', '/api/schedules/99/run', {}),
+        ('PATCH', '/api/schedules/99', {'enabled': True}), ('DELETE', '/api/schedules/99', None),
+    ]:
+        assert client.request(method, path, headers=headers, json=body).status_code == 404
+    assert calls == [org_db] * 5
+
+
+@pytest.mark.parametrize('auth_method', ['session', 'api_key'])
+def test_tenant_admin_can_read_scanner_catalog(client, monkeypatch, auth_method):
+    headers = authenticate(client, 'tenant_admin', auth_method)
+    monkeypatch.setattr(webapp, 'list_available_scanner_nodes', lambda: [{'node_id': 'node-a', 'name': 'Scanner'}])
+    monkeypatch.setattr(webapp, 'get_scanner_node_record', lambda node: {'capabilities': ['*']})
+    profiles = [{'scanner': 'openvas', 'id': 'full-fast', 'name': 'Full and fast'}]
+    monkeypatch.setattr(webapp, 'get_scanner_profiles', lambda node: {'items': profiles, 'updated_at': None})
+    assert client.get('/api/scanner-nodes/available', headers=headers).status_code == 200
+    assert client.get('/api/scanner-nodes/node-a/profiles', headers=headers).json()['items'] == profiles
 
 
 @pytest.mark.parametrize('auth_method', ['session', 'api_key'])

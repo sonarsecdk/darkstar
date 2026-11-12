@@ -201,6 +201,7 @@ def test_zap_recon_never_starts_active_scan(monkeypatch):
     calls = []
     def api(path):
         calls.append(path)
+        if '/accessUrl/' in path: return {"accessUrl": [{"responseHeader": "HTTP/1.1 200 OK\r\n"}]}
         if '/spider/action/' in path: return {"scan": "1"}
         if '/status/' in path: return {"status": "100"}
         if 'recordsToScan' in path: return {"recordsToScan": "0"}
@@ -223,6 +224,7 @@ def test_zap_imports_and_executes_selected_active_policy(monkeypatch, tmp_path, 
     def api(path):
         nonlocal imported
         calls.append(path)
+        if '/accessUrl/' in path: return {"accessUrl": [{"responseHeader": "HTTP/1.1 200 OK\r\n"}]}
         if 'scanPolicyNames' in path:
             return {"scanPolicyNames": ['custom', assigned_name] if imported else ['custom']}
         if 'importScanPolicy' in path:

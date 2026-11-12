@@ -102,6 +102,13 @@ const state = {
     approvedTargets: [],
     approvedTargetsVersion: 0,
     approvedTargetsOrgDb: null,
+    assetInventory: [],
+    assetInventoryAvailable: false,
+    assetMutationPending: false,
+    discoverySubmitting: false,
+    discoveryRuns: [],
+    discoveryPollTimer: null,
+    discoveryVersion: 0,
     scannerCatalogVersion: 0,
 };
 
@@ -1357,7 +1364,9 @@ async function requestJson(url, options = {}) {
 
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-        throw new Error(formatApiError(payload.detail || payload.error || "Request failed"));
+        const error = new Error(formatApiError(payload.detail || payload.error || "Request failed"));
+        error.status = response.status;
+        throw error;
     }
     return payload;
 }
@@ -1465,6 +1474,7 @@ function applyRoleUI() {
     const isPlatformAdmin = state.role === "platform_admin";
     const isTenantAdmin = roleRank(state.role) >= roleRank("tenant_admin");
     const canWrite = roleRank(state.role) >= roleRank("security_analyst");
+    if (!isPlatformAdmin) stopDiscoveryPolling();
     if (!isTenantAdmin) {
         if (TENANT_TABS.has(state.currentTab)) switchTab("dashboard");
         if (state.selectedScanId) closeDetailDrawer();
@@ -1585,6 +1595,7 @@ function switchTab(tabName) {
     if (tabButton) tabButton.classList.add("active");
 
     state.currentTab = tabName;
+    if (tabName !== "assets") stopDiscoveryPolling();
 
     if (tabName === "vulns") {
         renderVulnerabilityCharts();
@@ -2547,122 +2558,432 @@ function approvedTargetType(target) {
     return "Domain";
 }
 
-function renderApprovedAssets() {
-    const search = document.getElementById("approvedAssetSearch").value.trim().toLowerCase();
-    const items = state.approvedTargets.filter(item => item.target.toLowerCase().includes(search));
-    document.getElementById("approvedAssetRows").innerHTML = items.map(item => `
+const ASSET_SCANNER_LABELS = {openvas: 'OpenVAS', zap: 'ZAP', nuclei: 'Nuclei'};
+
+function assetScannerBadges(item) {
+    const compatible = item.compatible_scanners || [];
+    if (!compatible.length) return '<span class="field-hint">Discover services to identify compatible scanners.</span>';
+    return '<div class="asset-scanner-badges">' + compatible.map(scanner => {
+        const enabled = item.enabled_scanners == null || item.enabled_scanners.includes(scanner);
+        return `<span class="asset-scanner-badge ${enabled ? '' : 'disabled'}" title="${enabled ? 'Compatible service detected' : 'Disabled by a platform admin'}">${escapeHtml(ASSET_SCANNER_LABELS[scanner] || scanner)}${enabled ? '' : ' · disabled'}</span>`;
+    }).join('') + '</div>';
+}
+
+function assetServiceDetails(item) {
+    const services = item.services || [];
+    const addresses = item.addresses || [];
+    const serviceRows = services.map(service => {
+        let webUrl = '';
+        try {
+            const parsed = new URL(service.url);
+            if (['http:', 'https:'].includes(parsed.protocol)) webUrl = parsed.href;
+        } catch (error) { /* A network service does not necessarily have a URL. */ }
+        return `<li><span class="asset-port">${escapeHtml((service.protocol || 'tcp').toUpperCase())} ${escapeHtml(service.port)}</span>
+            <span>${escapeHtml(service.service || 'Unknown service')}</span>
+            ${webUrl ? `<a href="${escapeHtml(webUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(webUrl)}</a>` : ''}</li>`;
+    }).join('');
+    return `<details class="asset-service-details">
+        <summary>${services.length ? `${services.length} discovered service${services.length === 1 ? '' : 's'}` : 'Discovery details'}</summary>
+        ${addresses.length ? `<p class="field-hint">Addresses: ${addresses.map(escapeHtml).join(', ')}</p>` : ''}
+        ${services.length ? `<ul class="asset-service-list">${serviceRows}</ul>` : '<p class="field-hint">No services have been recorded for this asset.</p>'}
+        <p class="field-hint">Last checked: ${escapeHtml(formatDateTime(item.discovered_at) || 'Not yet discovered')}</p>
+        ${item.error ? `<p class="form-message form-message-warning">${escapeHtml(item.error)}</p>` : ''}
+    </details>`;
+}
+
+function assetScannerSettings(item) {
+    if (state.role !== 'platform_admin' || !state.assetInventoryAvailable) return '';
+    const defaults = item.enabled_scanners == null;
+    return `<details class="asset-scanner-settings admin-only"><summary>Manage scanner access</summary>
+        <form class="asset-scanners-form" data-target="${escapeHtml(item.target)}">
+            <label class="checkbox-label"><input type="checkbox" name="default_scanners" ${defaults ? 'checked' : ''}> Use default scanner access</label>
+            <fieldset class="asset-engine-choices"><legend>Enabled scanner families</legend>
+                ${Object.entries(ASSET_SCANNER_LABELS).map(([scanner, label]) => `<label><input type="checkbox" name="scanner" value="${scanner}" ${defaults || item.enabled_scanners.includes(scanner) ? 'checked' : ''} ${defaults ? 'disabled' : ''}> ${label}</label>`).join('')}
+            </fieldset>
+            <p class="field-hint">Default access includes other installed scanners. Custom access limits this whole asset to the selected families. Restrictions on a containing network or domain also apply.</p>
+            <button type="submit" class="btn-secondary btn-sm">Save scanner access</button>
+            <p class="form-message" role="status"></p>
+        </form>
+    </details>`;
+}
+
+function renderApprovedAssets(preserveSelection = false) {
+    const selected = new Set(preserveSelection ? [...document.querySelectorAll('.approved-asset-choice:checked')].map(input => input.value) : []);
+    const search = document.getElementById('approvedAssetSearch').value.trim().toLowerCase();
+    const items = state.approvedTargets.filter(item => [item.target, ...(item.addresses || []), ...(item.services || []).map(service => service.url || service.service)].join(' ').toLowerCase().includes(search));
+    document.getElementById('approvedAssetRows').innerHTML = items.map(item => `
         <tr>${canManageScans() ? `<td class="tenant-admin-only">${isIndividualTarget(item.target)
-            ? `<input type="checkbox" class="approved-asset-choice" value="${escapeHtml(item.target)}" aria-label="Select ${escapeHtml(item.target)}">` : '—'}</td>` : ''}
-            <td>${escapeHtml(item.target)}</td><td>${approvedTargetType(item.target)}</td></tr>
-    `).join("") || `<tr><td colspan="${canManageScans() ? 3 : 2}">No approved targets match this view.</td></tr>`;
+            ? `<input type="checkbox" class="approved-asset-choice" value="${escapeHtml(item.target)}" aria-label="Select ${escapeHtml(item.target)}" ${selected.has(item.target) ? 'checked' : ''}>` : '—'}</td>` : ''}
+            <td><strong class="asset-target">${escapeHtml(item.target)}</strong><span class="field-hint">${approvedTargetType(item.target)} · All ports approved</span></td>
+            <td>${assetScannerBadges(item)}${assetServiceDetails(item)}${assetScannerSettings(item)}</td></tr>
+    `).join('') || `<tr><td colspan="${canManageScans() ? 3 : 2}">No approved targets match this view.</td></tr>`;
+    document.getElementById('approvedInventoryCount').textContent = state.approvedTargets.length;
+    document.getElementById('discoveredServiceCount').textContent = state.approvedTargets.reduce((count, item) => count + (item.services || []).length, 0);
+    renderPendingAssets(preserveSelection);
     updateApprovedAssetSelection();
 }
 
+function renderPendingAssets(preserveSelection = false) {
+    const selected = new Set(preserveSelection ? [...document.querySelectorAll('.pending-asset-choice:checked')].map(input => input.value) : []);
+    const items = state.role === 'platform_admin' ? state.assetInventory.filter(item => !item.approved) : [];
+    document.getElementById('pendingAssetsPanel').classList.toggle('asset-section-empty', !items.length);
+    document.getElementById('pendingInventoryCount').textContent = items.length;
+    document.getElementById('pendingAssetCount').textContent = `${items.length} pending`;
+    document.getElementById('pendingAssetRows').innerHTML = items.map(item => `<tr>
+        <td><input type="checkbox" class="pending-asset-choice" value="${escapeHtml(item.target)}" aria-label="Approve ${escapeHtml(item.target)}" ${selected.has(item.target) ? 'checked' : ''}></td>
+        <td><strong class="asset-target">${escapeHtml(item.target)}</strong><span class="field-hint">${approvedTargetType(item.target)} · Pending approval</span></td>
+        <td>${assetScannerBadges(item)}${assetServiceDetails(item)}</td></tr>`).join('') || '<tr><td colspan="3">No assets awaiting approval. Import targets to discover their services.</td></tr>';
+    updatePendingAssetSelection();
+}
+
 function isIndividualTarget(target) {
-    return !target.startsWith("*.") && !target.includes("/");
+    return !target.startsWith('*.') && !target.includes('/');
 }
 
 function updateApprovedAssetSelection() {
-    const count = document.querySelectorAll(".approved-asset-choice:checked").length;
+    const count = document.querySelectorAll('.approved-asset-choice:checked').length;
     const ready = canManageScans() && !state.tenantSwitchPending && state.approvedTargetsOrgDb === state.orgDb;
-    document.getElementById("scanApprovedAssetsBtn").disabled = !ready || !count;
-    document.getElementById("selectAllApprovedAssetsBtn").disabled = !ready || !document.querySelector(".approved-asset-choice");
-    document.getElementById("approvedAssetSelectionCount").textContent = `${count} selected`;
+    document.getElementById('scanApprovedAssetsBtn').disabled = !ready || !count;
+    document.getElementById('selectAllApprovedAssetsBtn').disabled = !ready || !document.querySelector('.approved-asset-choice');
+    document.getElementById('approvedAssetSelectionCount').textContent = `${count} selected`;
+}
+
+function updatePendingAssetSelection() {
+    const count = document.querySelectorAll('.pending-asset-choice:checked').length;
+    const ready = state.role === 'platform_admin' && !state.tenantSwitchPending && state.assetInventoryAvailable && !state.assetMutationPending && state.approvedTargetsOrgDb === state.orgDb;
+    document.getElementById('pendingAssetSelectionCount').textContent = `${count} selected`;
+    document.getElementById('approveInventoryTargetsBtn').disabled = !ready || !count;
+    document.getElementById('selectAllPendingAssetsBtn').disabled = !ready || !document.querySelector('.pending-asset-choice');
 }
 
 function scanTargetValues() {
-    return [...new Set(document.getElementById("targetsInput").value.split(/[,\r\n]+/).map(value => value.trim()).filter(Boolean))];
+    return [...new Set(document.getElementById('targetsInput').value.split(/[,\r\n]+/).map(value => value.trim()).filter(Boolean))];
 }
 
 function updateScanTargetSelection() {
     const selected = new Set(scanTargetValues());
-    document.querySelectorAll(".scan-asset-choice").forEach(input => { input.checked = selected.has(input.value); });
-    document.getElementById("scanTargetCount").textContent = `${selected.size} targets`;
+    document.querySelectorAll('.scan-asset-choice').forEach(input => { input.checked = selected.has(input.value); });
+    document.getElementById('scanTargetCount').textContent = `${selected.size} targets`;
 }
 
 function renderScanAssetChoices() {
     const items = state.approvedTargets.filter(item => isIndividualTarget(item.target));
-    document.getElementById("scanAssetChoices").innerHTML = items.map(item => `
-        <label class="toggle-row"><input type="checkbox" class="scan-asset-choice" value="${escapeHtml(item.target)}"> ${escapeHtml(item.target)}</label>
-    `).join("") || '<p class="field-hint">No individual IPs or domains are available to select.</p>';
-    document.getElementById("selectAllScanAssetsBtn").disabled = !items.length || !canManageScans() || state.tenantSwitchPending;
+    document.getElementById('scanAssetChoices').innerHTML = items.map(item => `
+        <label class="toggle-row scan-inventory-choice"><input type="checkbox" class="scan-asset-choice" value="${escapeHtml(item.target)}">
+            <span>${escapeHtml(item.target)}${(item.services || []).some(service => service.url) ? '<small class="field-hint">Discovered web URLs are used for ZAP.</small>' : ''}</span></label>
+    `).join('') || '<p class="field-hint">No individual IPs or domains are available to select.</p>';
+    document.getElementById('selectAllScanAssetsBtn').disabled = !items.length || !canManageScans() || state.tenantSwitchPending;
     updateScanTargetSelection();
 }
 
-function invalidateApprovedAssets() {
+function stopDiscoveryPolling() {
+    clearTimeout(state.discoveryPollTimer);
+    state.discoveryPollTimer = null;
+}
+
+function invalidateApprovedAssets({clearDrafts = true} = {}) {
+    stopDiscoveryPolling();
     state.approvedTargetsVersion += 1;
+    state.discoveryVersion += 1;
     state.approvedTargets = [];
     state.approvedTargetsOrgDb = null;
-    document.getElementById("approvedAssetRows").innerHTML = "";
-    document.getElementById("approvedAssetsMessage").textContent = "";
-    document.getElementById("scanAssetChoices").textContent = "Approved targets have not been loaded.";
-    document.getElementById("selectAllScanAssetsBtn").disabled = true;
+    state.assetInventory = [];
+    state.assetInventoryAvailable = false;
+    state.discoveryRuns = [];
+    document.getElementById('approvedAssetRows').innerHTML = '';
+    document.getElementById('pendingAssetRows').innerHTML = '';
+    document.getElementById('approvedAssetsMessage').textContent = '';
+    document.getElementById('scanAssetChoices').textContent = 'Approved targets have not been loaded.';
+    document.getElementById('selectAllScanAssetsBtn').disabled = true;
+    document.getElementById('startAssetDiscoveryBtn').disabled = true;
+    document.getElementById('discoveryApplianceInput').disabled = true;
+    document.getElementById('discoveryApplianceInput').innerHTML = '<option value="">Choose an appliance</option>';
+    document.getElementById('assetDiscoveryRuns').textContent = '';
+    document.getElementById('assetDiscoveryProgress').classList.add('asset-section-empty');
+    document.getElementById('pendingAssetsPanel').classList.add('asset-section-empty');
+    ['approvedInventoryCount', 'discoveredServiceCount', 'pendingInventoryCount'].forEach(id => { document.getElementById(id).textContent = '0'; });
+    document.getElementById('pendingAssetCount').textContent = '0 pending';
+    if (clearDrafts) {
+        state.assetMutationPending = false;
+        state.discoverySubmitting = false;
+        document.getElementById('assetDiscoveryForm').reset();
+        document.getElementById('assetDiscoveryPanel').open = false;
+        document.getElementById('assetDiscoveryMessage').textContent = '';
+        document.getElementById('assetApprovalMessage').textContent = '';
+    }
     updateApprovedAssetSelection();
+    updatePendingAssetSelection();
+}
+
+async function fetchAssetInventory() {
+    try {
+        return await requestJson('/api/asset-inventory');
+    } catch (error) {
+        if ([404, 501].includes(error.status)) return null;
+        throw error;
+    }
+}
+
+function applyAssetInventory(inventory, approvals = []) {
+    state.assetInventoryAvailable = inventory !== null;
+    state.assetInventory = inventory?.items || approvals.map(item => ({...item, approved: true}));
+    state.approvedTargets = state.assetInventory.filter(item => item.approved);
+    state.approvedTargetsOrgDb = state.orgDb;
 }
 
 async function loadApprovedAssets() {
-    invalidateApprovedAssets();
+    invalidateApprovedAssets({clearDrafts: false});
     if (!state.authenticated || state.tenantSwitchPending) return;
     const orgDb = state.orgDb;
     const version = state.approvedTargetsVersion;
-    const message = document.getElementById("approvedAssetsMessage");
-    message.textContent = "Loading approved targets...";
-    document.getElementById("scanAssetChoices").textContent = message.textContent;
+    const message = document.getElementById('approvedAssetsMessage');
+    message.textContent = 'Loading approved targets...';
+    document.getElementById('scanAssetChoices').textContent = message.textContent;
     try {
-        const result = await requestJson("/api/scan-scope");
+        const inventory = await fetchAssetInventory();
+        const scope = inventory === null ? await requestJson('/api/scan-scope') : null;
         if (state.orgDb !== orgDb || state.approvedTargetsVersion !== version) return;
-        state.approvedTargets = result.items || [];
-        state.approvedTargetsOrgDb = orgDb;
-        message.textContent = state.approvedTargets.length ? "" : "No targets are approved. Contact a platform admin.";
+        applyAssetInventory(inventory, scope?.items || []);
+        message.textContent = state.approvedTargets.length ? '' : 'No targets are approved. Contact a platform admin.';
         renderApprovedAssets();
         renderScanAssetChoices();
+        if (state.role === 'platform_admin' && state.currentTab === 'assets') await loadDiscoveryManagement();
     } catch (error) {
         if (state.orgDb === orgDb && state.approvedTargetsVersion === version) {
             message.textContent = error.message;
-            document.getElementById("scanAssetChoices").textContent = `Could not load approved targets: ${error.message}`;
+            document.getElementById('scanAssetChoices').textContent = `Could not load approved targets: ${error.message}`;
         }
     }
 }
 
-document.getElementById("approvedAssetSearch").addEventListener("input", renderApprovedAssets);
-document.getElementById("refreshApprovedAssetsBtn").addEventListener("click", loadApprovedAssets);
-document.getElementById("approvedAssetRows").addEventListener("change", updateApprovedAssetSelection);
-document.getElementById("selectAllApprovedAssetsBtn").addEventListener("click", () => {
-    if (!canManageScans() || state.tenantSwitchPending) return;
-    document.querySelectorAll(".approved-asset-choice").forEach(input => { input.checked = true; });
-    updateApprovedAssetSelection();
+async function loadDiscoveryManagement() {
+    if (state.role !== 'platform_admin' || state.tenantSwitchPending || !state.assetInventoryAvailable) return;
+    const orgDb = state.orgDb;
+    const version = ++state.discoveryVersion;
+    const select = document.getElementById('discoveryApplianceInput');
+    const previous = select.value;
+    try {
+        const result = await requestJson('/api/scanner-nodes/available');
+        if (state.orgDb !== orgDb || state.discoveryVersion !== version || state.role !== 'platform_admin') return;
+        const nodes = (result.items || []).filter(node => node.discovery_supported && scannerNodeIsActive(node));
+        select.innerHTML = '<option value="">Choose an appliance</option>' + nodes.map(node => `<option value="${escapeHtml(node.node_id)}">${escapeHtml(scannerApplianceLabel(node))}</option>`).join('');
+        if (nodes.some(node => node.node_id === previous)) select.value = previous;
+        else if (nodes.length === 1) select.value = nodes[0].node_id;
+        select.disabled = !nodes.length;
+        document.getElementById('startAssetDiscoveryBtn').disabled = !nodes.length || state.discoverySubmitting;
+        if (!nodes.length) document.getElementById('assetDiscoveryMessage').textContent = 'No connected appliance supports discovery. Connect a discovery-capable worker before starting.';
+        await refreshDiscoveries();
+    } catch (error) {
+        if (state.orgDb === orgDb && state.discoveryVersion === version) document.getElementById('assetDiscoveryMessage').textContent = error.message;
+    }
+}
+
+async function refreshDiscoveries() {
+    stopDiscoveryPolling();
+    if (state.role !== 'platform_admin' || state.tenantSwitchPending || state.currentTab !== 'assets' || !state.assetInventoryAvailable) return;
+    const orgDb = state.orgDb;
+    const version = ++state.discoveryVersion;
+    try {
+        const result = await requestJson('/api/discoveries');
+        if (state.orgDb !== orgDb || state.discoveryVersion !== version || state.role !== 'platform_admin' || state.currentTab !== 'assets') return;
+        const before = JSON.stringify(state.discoveryRuns.map(run => [run.id, run.status]));
+        state.discoveryRuns = result.items || [];
+        renderDiscoveryRuns();
+        if (before !== JSON.stringify(state.discoveryRuns.map(run => [run.id, run.status]))) {
+            const inventory = await fetchAssetInventory();
+            if (state.orgDb !== orgDb || state.discoveryVersion !== version || state.role !== 'platform_admin') return;
+            if (inventory) {
+                applyAssetInventory(inventory);
+                renderApprovedAssets(true);
+                renderScanAssetChoices();
+            }
+        }
+        if (state.discoveryRuns.some(run => ['queued', 'running', 'stopping'].includes(run.status))) state.discoveryPollTimer = setTimeout(refreshDiscoveries, 5000);
+    } catch (error) {
+        if (state.orgDb === orgDb && state.discoveryVersion === version) document.getElementById('assetDiscoveryMessage').textContent = error.message;
+    }
+}
+
+function renderDiscoveryRuns() {
+    document.getElementById('assetDiscoveryProgress').classList.toggle('asset-section-empty', !state.discoveryRuns.length);
+    document.getElementById('assetDiscoveryRuns').innerHTML = state.discoveryRuns.slice(0, 5).map(run => `<div class="asset-discovery-run">
+        <div><strong>${escapeHtml(run.scan_name || `Discovery #${run.id}`)}</strong><span class="field-hint">${escapeHtml(run.targets)} · ${escapeHtml(formatDateTime(run.created_at))}</span></div>
+        <span class="status-badge status-${escapeHtml(run.status)}">${escapeHtml(run.status)}</span>
+        <div class="asset-actions"><button type="button" class="btn-secondary btn-sm discovery-details-btn" data-scan-id="${escapeHtml(run.id)}">View progress</button>
+        ${['queued', 'running'].includes(run.status) ? `<button type="button" class="btn-danger btn-sm discovery-stop-btn" data-scan-id="${escapeHtml(run.id)}">Stop</button>` : ''}</div>
+    </div>`).join('') || '<p class="field-hint">No discovery jobs yet.</p>';
+}
+
+document.getElementById('assetDiscoveryForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    if (state.role !== 'platform_admin' || state.tenantSwitchPending || state.discoverySubmitting || !state.assetInventoryAvailable || state.approvedTargetsOrgDb !== state.orgDb) return;
+    const orgDb = state.orgDb;
+    const sessionVersion = state.sessionVersion;
+    const message = document.getElementById('assetDiscoveryMessage');
+    const appliance = document.getElementById('discoveryApplianceInput').value;
+    if (!appliance) { message.textContent = 'Choose a connected discovery appliance.'; return; }
+    state.discoverySubmitting = true;
+    document.getElementById('startAssetDiscoveryBtn').disabled = true;
+    message.textContent = 'Validating targets and queuing discovery…';
+    try {
+        const result = await requestJson('/api/discoveries', {method: 'POST', body: JSON.stringify({
+            targets: document.getElementById('discoveryTargetsInput').value.trim(),
+            preferred_node_id: appliance,
+            port_mode: document.getElementById('discoveryPortModeInput').value,
+        })});
+        if (state.orgDb !== orgDb || state.sessionVersion !== sessionVersion) return;
+        message.textContent = `Discovery #${result.scan_id} queued. Results will appear below for review.`;
+        await refreshDiscoveries();
+    } catch (error) {
+        if (state.orgDb === orgDb && state.sessionVersion === sessionVersion) message.textContent = error.message;
+    } finally {
+        if (state.orgDb === orgDb && state.sessionVersion === sessionVersion) {
+            state.discoverySubmitting = false;
+            document.getElementById('startAssetDiscoveryBtn').disabled = document.getElementById('discoveryApplianceInput').disabled;
+        }
+    }
 });
-document.getElementById("scanApprovedAssetsBtn").addEventListener("click", async () => {
-    if (!canManageScans() || state.tenantSwitchPending || state.approvedTargetsOrgDb !== state.orgDb) return;
-    const targets = Array.from(document.querySelectorAll(".approved-asset-choice:checked"), input => input.value);
+
+document.getElementById('refreshDiscoveriesBtn').addEventListener('click', refreshDiscoveries);
+document.getElementById('assetDiscoveryRuns').addEventListener('click', async event => {
+    if (state.role !== 'platform_admin' || state.tenantSwitchPending) return;
+    const detail = event.target.closest('.discovery-details-btn');
+    if (detail) { await openScanDetail(detail.dataset.scanId); return; }
+    const stop = event.target.closest('.discovery-stop-btn');
+    if (!stop) return;
+    const sessionVersion = state.sessionVersion;
+    stop.disabled = true;
+    try {
+        await requestJson(`/api/scans/${encodeURIComponent(stop.dataset.scanId)}/stop`, {method: 'POST'});
+        if (state.sessionVersion === sessionVersion) await refreshDiscoveries();
+    } catch (error) {
+        if (state.sessionVersion === sessionVersion) {
+            stop.disabled = false;
+            document.getElementById('assetDiscoveryMessage').textContent = error.message;
+        }
+    }
+});
+
+document.getElementById('pendingAssetRows').addEventListener('change', updatePendingAssetSelection);
+document.getElementById('selectAllPendingAssetsBtn').addEventListener('click', () => {
+    if (state.role !== 'platform_admin' || state.tenantSwitchPending || state.assetMutationPending) return;
+    document.querySelectorAll('.pending-asset-choice').forEach(input => { input.checked = true; });
+    updatePendingAssetSelection();
+});
+document.getElementById('approveInventoryTargetsBtn').addEventListener('click', async () => {
+    if (state.role !== 'platform_admin' || state.tenantSwitchPending || state.assetMutationPending || state.approvedTargetsOrgDb !== state.orgDb) return;
+    const targets = [...document.querySelectorAll('.pending-asset-choice:checked')].map(input => input.value);
     if (!targets.length) return;
     const orgDb = state.orgDb;
-    document.getElementById("targetsInput").value = "";
-    await switchTab("scan");
+    const sessionVersion = state.sessionVersion;
+    const message = document.getElementById('assetApprovalMessage');
+    state.assetMutationPending = true;
+    updatePendingAssetSelection();
+    message.textContent = 'Saving whole-asset approvals…';
+    try {
+        await requestJson('/api/asset-inventory/approve', {method: 'POST', body: JSON.stringify({
+            targets,
+            enabled_scanners: [...document.querySelectorAll('#approvalScannerChoices input:checked')].map(input => input.value),
+        })});
+        if (state.orgDb !== orgDb || state.sessionVersion !== sessionVersion) return;
+        await loadApprovedAssets();
+        if (state.orgDb === orgDb && state.sessionVersion === sessionVersion) {
+            document.getElementById('approvedAssetsMessage').textContent = `${targets.length} asset${targets.length === 1 ? '' : 's'} approved, including all ports.`;
+        }
+    } catch (error) {
+        if (state.orgDb === orgDb && state.sessionVersion === sessionVersion) message.textContent = error.message;
+    } finally {
+        if (state.orgDb === orgDb && state.sessionVersion === sessionVersion) {
+            state.assetMutationPending = false;
+            updatePendingAssetSelection();
+        }
+    }
+});
+
+document.getElementById('approvedAssetRows').addEventListener('change', event => {
+    if (event.target.name === 'default_scanners') {
+        event.target.closest('form').querySelectorAll('[name="scanner"]').forEach(input => { input.disabled = event.target.checked; });
+    }
+    updateApprovedAssetSelection();
+});
+document.getElementById('approvedAssetRows').addEventListener('submit', async event => {
+    const form = event.target.closest('.asset-scanners-form');
+    if (!form) return;
+    event.preventDefault();
+    if (state.role !== 'platform_admin' || state.tenantSwitchPending || state.assetMutationPending || state.approvedTargetsOrgDb !== state.orgDb) return;
+    const orgDb = state.orgDb;
+    const sessionVersion = state.sessionVersion;
+    const message = form.querySelector('.form-message');
+    const scanners = form.querySelector('[name="default_scanners"]').checked ? null : [...form.querySelectorAll('[name="scanner"]:checked')].map(input => input.value);
+    state.assetMutationPending = true;
+    form.querySelector('button').disabled = true;
+    message.textContent = 'Saving scanner access…';
+    try {
+        const result = await requestJson('/api/asset-inventory/scanners', {method: 'PUT', body: JSON.stringify({target: form.dataset.target, enabled_scanners: scanners})});
+        if (state.orgDb !== orgDb || state.sessionVersion !== sessionVersion) return;
+        const item = state.approvedTargets.find(asset => asset.target === form.dataset.target);
+        const updated = (result.items || []).find(asset => asset.target === form.dataset.target);
+        if (item && updated) {
+            item.enabled_scanners = updated.enabled_scanners;
+            const badges = form.closest('td').querySelector('.asset-scanner-badges');
+            if (badges) badges.outerHTML = assetScannerBadges(item);
+            const defaults = item.enabled_scanners == null;
+            form.querySelector('[name="default_scanners"]').checked = defaults;
+            form.querySelectorAll('[name="scanner"]').forEach(input => {
+                input.disabled = defaults;
+                input.checked = defaults || item.enabled_scanners.includes(input.value);
+            });
+        }
+        message.textContent = 'Scanner access saved for this whole asset.';
+    } catch (error) {
+        if (state.orgDb === orgDb && state.sessionVersion === sessionVersion) message.textContent = error.message;
+    } finally {
+        if (state.orgDb === orgDb && state.sessionVersion === sessionVersion) {
+            state.assetMutationPending = false;
+            form.querySelector('button').disabled = false;
+            updatePendingAssetSelection();
+        }
+    }
+});
+
+document.getElementById('approvedAssetSearch').addEventListener('input', () => renderApprovedAssets());
+document.getElementById('refreshApprovedAssetsBtn').addEventListener('click', loadApprovedAssets);
+document.getElementById('selectAllApprovedAssetsBtn').addEventListener('click', () => {
+    if (!canManageScans() || state.tenantSwitchPending) return;
+    document.querySelectorAll('.approved-asset-choice').forEach(input => { input.checked = true; });
+    updateApprovedAssetSelection();
+});
+document.getElementById('scanApprovedAssetsBtn').addEventListener('click', async () => {
+    if (!canManageScans() || state.tenantSwitchPending || state.approvedTargetsOrgDb !== state.orgDb) return;
+    const targets = Array.from(document.querySelectorAll('.approved-asset-choice:checked'), input => input.value);
+    if (!targets.length) return;
+    const orgDb = state.orgDb;
+    document.getElementById('targetsInput').value = '';
+    await switchTab('scan');
     if (state.orgDb !== orgDb || state.tenantSwitchPending || !canManageScans()) return;
     if (state.approvedTargetsOrgDb !== orgDb || targets.some(target => !state.approvedTargets.some(item => item.target === target))) {
-        document.getElementById("scanMessage").textContent = "The selected assets could not be verified. Refresh the list and select them again.";
+        document.getElementById('scanMessage').textContent = 'The selected assets could not be verified. Refresh the list and select them again.';
         return;
     }
-    document.getElementById("targetsInput").value = targets.join("\n");
+    document.getElementById('targetsInput').value = targets.join('\n');
     updateScanTargetSelection();
 });
-document.getElementById("scanAssetChoices").addEventListener("change", event => {
-    if (!event.target.matches(".scan-asset-choice") || !canManageScans() || state.tenantSwitchPending) return;
+document.getElementById('scanAssetChoices').addEventListener('change', event => {
+    if (!event.target.matches('.scan-asset-choice') || !canManageScans() || state.tenantSwitchPending) return;
     const targets = new Set(scanTargetValues());
     if (event.target.checked) targets.add(event.target.value);
     else targets.delete(event.target.value);
-    document.getElementById("targetsInput").value = [...targets].join("\n");
+    document.getElementById('targetsInput').value = [...targets].join('\n');
     updateScanTargetSelection();
 });
-document.getElementById("selectAllScanAssetsBtn").addEventListener("click", () => {
+document.getElementById('selectAllScanAssetsBtn').addEventListener('click', () => {
     if (!canManageScans() || state.tenantSwitchPending || state.approvedTargetsOrgDb !== state.orgDb) return;
     const targets = new Set(scanTargetValues());
     state.approvedTargets.filter(item => isIndividualTarget(item.target)).forEach(item => targets.add(item.target));
-    document.getElementById("targetsInput").value = [...targets].join("\n");
+    document.getElementById('targetsInput').value = [...targets].join('\n');
     updateScanTargetSelection();
 });
-document.getElementById("targetsInput").addEventListener("input", updateScanTargetSelection);
+document.getElementById('targetsInput').addEventListener('input', updateScanTargetSelection);
 
 function invalidateScanScope() {
     invalidateApprovedAssets();

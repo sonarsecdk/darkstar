@@ -2738,7 +2738,16 @@ textarea::selection {
 
     .header-right {
         width: 100%;
+        flex-wrap: wrap;
         justify-content: space-between;
+    }
+
+    #tenantSwitchGroup {
+        max-width: 100%;
+    }
+
+    .header-select {
+        min-width: 0;
     }
 
     .dashboard-hero {
@@ -2833,4 +2842,79 @@ textarea::selection {
     width: 100%;
     min-width: 0;
     box-sizing: border-box;
+}
+
+/* Asset onboarding uses the same theme tokens as the customer dashboard. */
+.asset-section-empty { display: none !important; }
+#assets-tab .form-message:empty { display: none; }
+#assets-tab button:disabled { opacity: 0.45; cursor: not-allowed; }
+.asset-overview {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-lg);
+    margin-bottom: var(--space-lg);
+    padding: var(--space-lg);
+    border: 1px solid var(--color-border);
+    border-left: 3px solid var(--color-primary);
+    border-radius: var(--radius-lg);
+    background: var(--color-bg-primary);
+}
+
+.asset-overview h2 { margin: var(--space-xs) 0 var(--space-sm); }
+.asset-overview p { color: var(--color-text-secondary); }
+.asset-overview-counts { display: flex; flex-wrap: wrap; gap: var(--space-xl); }
+.asset-overview-counts > div { display: grid; gap: var(--space-xs); }
+.asset-overview-counts strong { font-size: 28px; line-height: 1.15; color: var(--color-primary); }
+.asset-overview-counts span { font-size: 12px; color: var(--color-text-muted); }
+
+.asset-discovery-panel > summary {
+    cursor: pointer;
+    color: var(--color-text-primary);
+    font-weight: 600;
+    padding: var(--space-xs) 0;
+}
+.asset-discovery-panel > summary .field-hint { margin: var(--space-xs) 0 0 var(--space-lg); font-weight: 400; }
+.asset-discovery-panel[open] > summary { margin-bottom: var(--space-lg); }
+.asset-discovery-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-lg); }
+.asset-discovery-options select { width: 100%; min-width: 0; }
+.asset-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm); }
+.asset-approval-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-md); margin: var(--space-md) 0; }
+.asset-engine-choices { display: flex; flex-wrap: wrap; gap: var(--space-sm) var(--space-md); border: 0; min-width: 0; }
+.asset-engine-choices legend { font-size: 12px; color: var(--color-text-muted); margin-bottom: var(--space-xs); }
+.asset-engine-choices label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.asset-inventory-table td { vertical-align: top; }
+.asset-inventory-table th:first-child { width: 65px; }
+.asset-inventory-table .asset-target { display: block; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 13px; }
+.asset-inventory-table .field-hint { margin-top: var(--space-xs); }
+.asset-scanner-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+.asset-scanner-badge { border: 1px solid var(--color-border); border-radius: 999px; padding: 2px 9px; font-size: 11px; color: var(--color-primary); background: var(--color-bg-secondary); }
+.asset-scanner-badge.disabled { color: var(--color-text-muted); border-style: dashed; }
+.asset-service-details, .asset-scanner-settings { margin-top: var(--space-sm); }
+.asset-service-details > summary, .asset-scanner-settings > summary { cursor: pointer; color: var(--color-text-secondary); font-size: 12px; }
+.asset-service-details[open] > summary, .asset-scanner-settings[open] > summary { margin-bottom: var(--space-sm); color: var(--color-primary); }
+.asset-service-list { list-style: none; display: grid; gap: var(--space-sm); margin: var(--space-sm) 0; }
+.asset-service-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-sm); font-size: 12px; }
+.asset-port { font-family: var(--font-mono); color: var(--color-text-secondary); white-space: nowrap; }
+.asset-service-list a { color: var(--color-primary); overflow-wrap: anywhere; }
+.asset-scanners-form { display: grid; gap: var(--space-sm); padding: var(--space-md); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-bg-secondary); }
+.asset-scanners-form button { justify-self: start; }
+.asset-discovery-runs { display: grid; gap: var(--space-sm); }
+.asset-discovery-run { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-md); padding: var(--space-md); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-bg-secondary); }
+.asset-discovery-run > div:first-child { flex: 1; min-width: min(230px, 100%); overflow-wrap: anywhere; }
+.scan-inventory-choice { align-items: flex-start; }
+
+@media (max-width: 700px) {
+    .asset-overview { padding: var(--space-md); }
+    .asset-overview-counts { width: 100%; gap: var(--space-lg); }
+    .asset-overview-counts strong { font-size: 24px; }
+    .asset-discovery-options { grid-template-columns: 1fr; }
+    .asset-approval-toolbar { align-items: flex-start; }
+    .asset-approval-toolbar .asset-engine-choices { width: 100%; }
+    .asset-inventory-table { min-width: 0; }
+    .asset-inventory-table th, .asset-inventory-table td { padding: var(--space-sm); white-space: normal; }
+    .asset-inventory-table th:first-child { width: 42px; }
+    .asset-inventory-table .asset-target { font-size: 12px; }
+    .asset-discovery-run .asset-actions { width: 100%; }
 }

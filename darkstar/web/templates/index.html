@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/static/css/app.css?v=20261111-customer-assets" />
+    <link rel="stylesheet" href="/static/css/app.css?v=20261112-asset-discovery" />
     <link rel="stylesheet" href="/static/css/themes.css?v=20261012" />
 </head>
 <body data-authenticated="{{ 'true' if logged_in else 'false' }}" data-organization="{{ organization }}" data-org-db="{{ org_db }}" data-role="{{ role }}">
@@ -661,9 +661,78 @@
 
             <!-- Approved Assets Tab -->
             <div id="assets-tab" class="tab-panel">
+                <section class="asset-overview" aria-label="Asset inventory summary">
+                    <div>
+                        <p class="eyebrow">Your organization's scope</p>
+                        <h2>Assets and services</h2>
+                        <p>Approve an IP or domain once. Its discovered ports stay part of that asset.</p>
+                    </div>
+                    <div class="asset-overview-counts">
+                        <div><strong id="approvedInventoryCount">0</strong><span>Approved assets</span></div>
+                        <div><strong id="discoveredServiceCount">0</strong><span>Discovered services</span></div>
+                        <div class="admin-only hidden"><strong id="pendingInventoryCount">0</strong><span>Awaiting approval</span></div>
+                    </div>
+                </section>
+                <details id="assetDiscoveryPanel" class="card asset-discovery-panel admin-only hidden">
+                    <summary><span>Import and discover</span><span class="field-hint">Find services before publishing assets to your customer.</span></summary>
+                    <form id="assetDiscoveryForm" class="form-vertical">
+                        <div class="form-group">
+                            <label for="discoveryTargetsInput">IPs, domains, network ranges or web URLs</label>
+                            <textarea id="discoveryTargetsInput" rows="4" placeholder="192.0.2.10&#10;app.example.com&#10;https://portal.example.com:8443/" required></textarea>
+                            <small class="field-hint">One target per line. A URL checks that application endpoint; an IP or domain discovers its services. Results remain pending until you approve them.</small>
+                        </div>
+                        <div class="asset-discovery-options">
+                            <div class="form-group">
+                                <label for="discoveryApplianceInput">Discovery appliance</label>
+                                <select id="discoveryApplianceInput" class="filter-select" required disabled><option value="">Loading available appliances…</option></select>
+                                <small class="field-hint">Choose a connected appliance that can reach this customer's network.</small>
+                            </div>
+                            <div class="form-group">
+                                <label for="discoveryPortModeInput">Port coverage</label>
+                                <select id="discoveryPortModeInput" class="filter-select">
+                                    <option value="full">All TCP ports — includes unusual services</option>
+                                    <option value="common">Common ports — faster, narrower coverage</option>
+                                </select>
+                                <small class="field-hint">Full discovery checks ports 1–65535 and can take several minutes per host.</small>
+                            </div>
+                        </div>
+                        <div class="asset-actions">
+                            <button id="startAssetDiscoveryBtn" class="btn-primary" type="submit" disabled>Start discovery</button>
+                            <span class="field-hint">Discovery finds services. It does not run vulnerability policies.</span>
+                        </div>
+                    </form>
+                    <p id="assetDiscoveryMessage" class="form-message" role="status"></p>
+                </details>
+                <div id="assetDiscoveryProgress" class="card asset-section-empty admin-only hidden">
+                    <div class="card-header">Discovery activity <button id="refreshDiscoveriesBtn" type="button" class="btn-secondary btn-sm">Refresh activity</button></div>
+                    <div id="assetDiscoveryRuns" class="asset-discovery-runs"><p class="field-hint">No discovery jobs yet.</p></div>
+                </div>
+                <div id="pendingAssetsPanel" class="card asset-section-empty admin-only hidden">
+                    <div class="card-header">Review discovered assets <span id="pendingAssetCount" class="header-badge">0 pending</span></div>
+                    <p>Approval covers the whole IP or domain, including its ports. Domains also need their resolved IPs or network ranges approved.</p>
+                    <div class="asset-approval-toolbar">
+                        <button id="selectAllPendingAssetsBtn" type="button" class="btn-secondary btn-sm" disabled>Select visible candidates</button>
+                        <span id="pendingAssetSelectionCount" role="status">0 selected</span>
+                        <fieldset class="asset-engine-choices" id="approvalScannerChoices">
+                            <legend>Enable scanners on these assets</legend>
+                            <label><input type="checkbox" value="openvas" checked> OpenVAS</label>
+                            <label><input type="checkbox" value="zap" checked> ZAP</label>
+                            <label><input type="checkbox" value="nuclei" checked> Nuclei</label>
+                        </fieldset>
+                        <button id="approveInventoryTargetsBtn" type="button" class="btn-primary btn-sm" disabled>Approve selected</button>
+                    </div>
+                    <p class="field-hint">Scanners still need a compatible service and an installed profile. Nuclei compatibility depends on the selected template.</p>
+                    <p id="assetApprovalMessage" class="form-message" role="status"></p>
+                    <div class="table-container">
+                        <table class="data-table asset-inventory-table">
+                            <thead><tr><th>Select</th><th>Candidate</th><th>Discovery</th></tr></thead>
+                            <tbody id="pendingAssetRows"></tbody>
+                        </table>
+                    </div>
+                </div>
                 <div class="card">
                     <div class="card-header">Approved Assets</div>
-                    <p>Your organization's allowed scan targets. Only platform admins can change this list in Settings.</p>
+                    <p>Your organization's approved IPs and domains. Only platform admins can change approvals and scanner access.</p>
                     <div class="filter-grid">
                         <div class="filter-group">
                             <label for="approvedAssetSearch">Search targets</label>
@@ -675,14 +744,14 @@
                     </div>
                     <p>Network ranges and wildcard rules describe permissions; they are not lists of discovered hosts.</p>
                     <p id="approvedAssetsMessage" class="form-message" role="status"></p>
-                    <div class="tenant-admin-only hidden">
+                    <div class="asset-actions tenant-admin-only hidden">
                         <button id="selectAllApprovedAssetsBtn" type="button" class="btn-secondary btn-sm">Select visible IPs and domains</button>
                         <button id="scanApprovedAssetsBtn" type="button" class="btn-primary btn-sm" disabled>Scan selected</button>
                         <span id="approvedAssetSelectionCount" role="status">0 selected</span>
                     </div>
                     <div class="table-container">
-                        <table class="data-table">
-                            <thead><tr><th class="tenant-admin-only hidden">Select</th><th>Target</th><th>Type</th></tr></thead>
+                        <table class="data-table asset-inventory-table">
+                            <thead><tr><th class="tenant-admin-only hidden">Select</th><th>Target</th><th>Services and scanner access</th></tr></thead>
                             <tbody id="approvedAssetRows"></tbody>
                         </table>
                     </div>
@@ -1273,6 +1342,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=20261111-customer-assets"></script>
+    <script src="/static/js/app.js?v=20261112-asset-discovery"></script>
 </body>
 </html>

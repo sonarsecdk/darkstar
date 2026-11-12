@@ -29,9 +29,9 @@ not follow HTTP redirects or disable Nmap's default printer-port exclusions.
 
 Each job accepts at most 256 targets and 256 unique resolved addresses. Larger
 CIDRs are rejected before expansion. Jobs use bounded DNS lookups, Nmap timeouts
-and service counts. Full discovery is deliberately limited to 200 packets per
-second and may take several minutes per address. Stop is available on active
-discovery jobs.
+and service counts. The initial TCP port sweep is limited to 200 probes per
+second; service identification and HTTP checks use separate time limits. Full
+discovery may take several minutes per address. Stop is available on active jobs.
 
 The platform administrator authorizes only the submitted discovery scope.
 Darkstar records the actor and an immutable DNS address snapshot with the job.

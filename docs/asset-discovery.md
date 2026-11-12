@@ -14,9 +14,13 @@ other members have read-only access to this inventory.
 3. Choose an online appliance that supports discovery and a port preset.
 4. Start discovery and review its progress and results.
 
-Discovery requires Nmap on the selected appliance. Updated workers advertise
-discovery with the `discovery` capability; `*` also includes it. A ZAP-only worker
-can use `DARKSTAR_SCANNER_CAPABILITIES=zap,discovery` when Nmap is installed.
+Discovery requires Nmap on the selected appliance. Its platform-managed node
+registration must include the `discovery` capability; `*` also includes it. A
+ZAP-only appliance should be registered with `zap` and `discovery`, and run with
+`DARKSTAR_SCANNER_CAPABILITIES=zap,discovery`. Worker heartbeats cannot grant new
+capabilities: changing only that environment variable does not update an existing
+node's registration. An operator must update its registered capabilities or
+attach a new node with the required capabilities.
 
 For an IP or domain, **All TCP ports** checks ports 1–65535. **Common ports** uses
 the smaller fixed list in `darkstar/asset_discovery.py`, including 3000, 8080 and

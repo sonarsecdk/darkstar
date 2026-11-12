@@ -11,16 +11,28 @@ other members have read-only access to this inventory.
 1. Select the customer's organization and open **Approved Assets**.
 2. Open the discovery panel and paste IPs, CIDRs, exact domain names, or HTTP/HTTPS
    URLs, separated by commas or newlines.
-3. Choose an online appliance that supports discovery and a port preset.
-4. Start discovery and review its progress and results.
+3. Start discovery. Darkstar automatically assigns the job to an available
+   discovery worker. You do not choose a vulnerability scanner or appliance.
+4. Review the detected services, suitable scanner types, and configured
+   appliances. Approve the hosts after reviewing those results.
 
-Discovery requires Nmap on the selected appliance. Its platform-managed node
+Full TCP discovery is the default for IPs and domains. The optional common-port
+preset trades coverage for speed. Vulnerability scanners and their policies are
+selected later, when starting a scan of approved assets.
+
+Discovery requires Nmap on the workers providing discovery. Their platform-managed node
 registration must include the `discovery` capability; `*` also includes it. A
 ZAP-only appliance should be registered with `zap` and `discovery`, and run with
 `DARKSTAR_SCANNER_CAPABILITIES=zap,discovery`. Worker heartbeats cannot grant new
 capabilities: changing only that environment variable does not update an existing
 node's registration. An operator must update its registered capabilities or
 attach a new node with the required capabilities.
+
+The existing queue dispatches discovery to a worker with registered discovery
+capability and available capacity. The job records which worker actually ran it.
+That worker needs network access to the submitted targets. Probe errors are shown
+with the results. A scan with no detected services does not prove that the target
+was reachable or has no services; filtering and network access may need checking.
 
 For an IP or domain, **All TCP ports** checks ports 1–65535. **Common ports** uses
 the smaller fixed list in `darkstar/asset_discovery.py`, including 3000, 8080 and
@@ -68,7 +80,18 @@ jobs for that organization to finish or stop first.
 
 ## Scanner compatibility and access
 
-Compatibility badges describe observed services. Platform administrators can
+Compatibility badges are derived from observed services: TCP services suggest
+OpenVAS, and responding web applications suggest ZAP and potentially Nuclei web
+templates. An IP learned from DNS alone does not prove a service is present.
+
+Each scanner tag also lists the online appliances whose registered capabilities
+and installed profiles support it. These matches are computed from the current
+catalog, so appliance IDs are not permanently attached to assets. An appliance
+tag means a matching scanner is configured there; it does not prove that every
+listed appliance can reach that target's network. Scanner access restrictions
+remain separate from suitability.
+
+Platform administrators can
 separately limit an approved asset to OpenVAS, ZAP, or the Nuclei family. An empty
 selection disables scanning for that asset. Assets without a custom selection
 retain existing scanner access. Overlapping host, resolved-IP and CIDR rules are

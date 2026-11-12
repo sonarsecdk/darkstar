@@ -52,7 +52,7 @@ from .core.asset_inventory import (
     save_discovery_results,
     update_asset_scanners,
 )
-from .core.scanner_targets import require_enabled_scanner, zap_targets
+from .core.scanner_targets import require_enabled_scanner, scanner_family, zap_targets
 
 from .core.db_helper import (
     create_scan_components,
@@ -496,7 +496,6 @@ class ScanScopeRequest(BaseModel):
 
 class DiscoveryRequest(BaseModel):
     targets: str = Field(min_length=1, max_length=65536)
-    preferred_node_id: str = Field(min_length=1, max_length=64)
     port_mode: Literal["common", "full"] = "full"
 
 
@@ -1190,7 +1189,9 @@ def scan_scope(request: Request):
 
 def _inventory_response(request: Request) -> dict:
     items = list_asset_inventory(_get_org_db(request), include_pending=_get_role(request) == "platform_admin")
-    return {"items": items, "pending_count": sum(not item["approved"] for item in items)}
+    scanners = {scanner for item in items for scanner in item.get("compatible_scanners", [])}
+    return {"items": items, "pending_count": sum(not item["approved"] for item in items),
+            "scanner_appliances": _asset_scanner_appliances(scanners)}
 
 
 def _asset_actor(request: Request) -> str:
@@ -1242,25 +1243,52 @@ def _node_supports_discovery(node: dict) -> bool:
     return bool(capabilities.intersection({"*", "all", "discovery", "scanner:discovery"}))
 
 
+def _node_is_online(node: dict) -> bool:
+    last_seen = node.get("last_seen_at")
+    if isinstance(last_seen, str):
+        last_seen = datetime.fromisoformat(last_seen.replace("Z", "+00:00")).replace(tzinfo=None)
+    return bool(not node.get("revoked_at") and node.get("status") in {"online", "busy"}
+                and last_seen and (datetime.utcnow() - last_seen).total_seconds() <= 180)
+
+
+def _discovery_available() -> bool:
+    return any(_node_supports_discovery(node) and _node_is_online(node)
+               for node in list_available_scanner_nodes())
+
+
+def _asset_scanner_appliances(scanners: set[str]) -> dict:
+    """Match inferred scanner types to online appliances with installed profiles."""
+    matches = {scanner: [] for scanner in sorted(scanners)}
+    if not scanners:
+        return matches
+    for node in list_available_scanner_nodes():
+        if not _node_is_online(node):
+            continue
+        capabilities = set(node.get("capabilities") or [])
+        families = {scanner_family(capability.removeprefix("scanner:")) for capability in capabilities}
+        if not capabilities.intersection({"*", "all"}) and not families.intersection(scanners):
+            continue
+        installed = {scanner_family(profile["scanner"])
+                     for profile in get_scanner_profiles(node["node_id"])["items"]
+                     if capabilities.intersection({"*", "all", profile["scanner"], "scanner:" + profile["scanner"]})}
+        for scanner in scanners & installed:
+            matches[scanner].append({"node_id": node["node_id"], "name": node.get("name") or node["node_id"]})
+    return matches
+
+
 @app.get("/api/discoveries")
 def discoveries(request: Request):
     _require_platform_admin(request)
     return {"items": [item for item in get_scan_history(_get_org_db(request), limit=100)
-                      if item.get("scan_mode") == "discovery"]}
+                      if item.get("scan_mode") == "discovery"], "available": _discovery_available()}
 
 
 @app.post("/api/discoveries")
 def start_discovery(request: Request, body: DiscoveryRequest):
     _require_platform_admin(request)
     org_db = _get_org_db(request)
-    node = get_scanner_node_record(body.preferred_node_id)
-    if not node or node.get("revoked_at") or not _node_supports_discovery(node):
-        raise HTTPException(status_code=400, detail="Choose an appliance configured for discovery")
-    last_seen = node.get("last_seen_at")
-    if isinstance(last_seen, str):
-        last_seen = datetime.fromisoformat(last_seen.replace("Z", "+00:00")).replace(tzinfo=None)
-    if node.get("status") not in {"online", "busy"} or not last_seen or (datetime.utcnow() - last_seen).total_seconds() > 180:
-        raise HTTPException(status_code=400, detail="The discovery appliance is offline")
+    if not _discovery_available():
+        raise HTTPException(status_code=503, detail="Discovery is currently unavailable. No discovery worker is online.")
     scan_id = None
     try:
         plan = prepare_discovery(body.targets, body.port_mode)
@@ -1273,7 +1301,7 @@ def start_discovery(request: Request, body: DiscoveryRequest):
         enqueue_scanner_job(
             org_db, scan_id, "Asset discovery", "discovery", targets,
             {"job_type": "discovery", "discovery": plan, "authorized_by": actor},
-            scanner="discovery", preferred_node_id=body.preferred_node_id,
+            scanner="discovery",
         )
     except Exception as exc:
         if scan_id is not None:

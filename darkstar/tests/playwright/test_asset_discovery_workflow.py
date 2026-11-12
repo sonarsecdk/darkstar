@@ -33,11 +33,15 @@ ASSETS = [
 
 def install_inventory(page, base_url, role='platform_admin'):
     state = _install_dashboard_mocks(page, base_url, role=role)
-    state.update(assets=copy.deepcopy(ASSETS), discoveries=[], approvals=[], scanner_settings=[], management_reads=[])
+    state.update(assets=copy.deepcopy(ASSETS), discoveries=[], discovery_available=True,
+                 approvals=[], scanner_settings=[], management_reads=[])
+    appliances = {'openvas': [{'node_id': 'network', 'name': 'Network scanner'}],
+                  'zap': [{'node_id': 'web', 'name': 'Web scanner'}]}
 
     def inventory(route):
         # Include pending items deliberately: the UI should also hide them from members.
-        _json(route, {'items': state['assets'], 'pending_count': sum(not item['approved'] for item in state['assets'])})
+        _json(route, {'items': state['assets'], 'pending_count': sum(not item['approved'] for item in state['assets']),
+                      'scanner_appliances': appliances})
 
     def scope(route):
         _json(route, {'items': [{'target': item['target']} for item in state['assets'] if item['approved']]})
@@ -50,7 +54,7 @@ def install_inventory(page, base_url, role='platform_admin'):
             _json(route, {'ok': True, 'scan_id': 901})
         else:
             state['management_reads'].append('/api/discoveries')
-            _json(route, {'items': state['discoveries']})
+            _json(route, {'items': state['discoveries'], 'available': state['discovery_available']})
 
     def approve(route):
         payload = route.request.post_data_json
@@ -62,13 +66,13 @@ def install_inventory(page, base_url, role='platform_admin'):
             if asset['target'] in payload['targets']:
                 asset['approved'] = True
                 asset['enabled_scanners'] = payload['enabled_scanners']
-        _json(route, {'items': state['assets']})
+        _json(route, {'items': state['assets'], 'scanner_appliances': appliances})
 
     def settings(route):
         payload = route.request.post_data_json
         state['scanner_settings'].append(payload)
         next(item for item in state['assets'] if item['target'] == payload['target'])['enabled_scanners'] = payload['enabled_scanners']
-        _json(route, {'items': state['assets']})
+        _json(route, {'items': state['assets'], 'scanner_appliances': appliances})
 
     page.route('**/api/asset-inventory', inventory)
     page.route('**/api/scan-scope', scope)
@@ -126,8 +130,9 @@ def test_platform_discovers_then_approves_whole_hosts(browser, darkstar_server):
     page.locator('[data-tab="assets"]').click()
     expect(page.locator('#pendingAssetRows tr')).to_have_count(2)
     page.locator('#assetDiscoveryPanel > summary').click()
-    expect(page.locator('#discoveryApplianceInput option')).to_have_count(2)
-    expect(page.locator('#discoveryApplianceInput')).to_have_value('node-1')
+    expect(page.locator('#discoveryApplianceInput')).to_have_count(0)
+    expect(page.locator('#pendingAssetRows')).to_contain_text('Available on: Web scanner')
+    expect(page.locator('#pendingAssetRows')).to_contain_text('Available on: Network scanner')
     output = Path('test-results/playwright')
     output.mkdir(parents=True, exist_ok=True)
     page.screenshot(path=str(output / 'asset-discovery-platform.png'), full_page=True)
@@ -135,7 +140,7 @@ def test_platform_discovers_then_approves_whole_hosts(browser, darkstar_server):
     page.locator('#startAssetDiscoveryBtn').click()
     expect(page.locator('#assetDiscoveryRuns')).to_contain_text('queued')
     assert state['discoveries'][0]['request'] == {
-        'targets': '198.51.100.30\nnew.example.test', 'preferred_node_id': 'node-1', 'port_mode': 'full'}
+        'targets': '198.51.100.30\nnew.example.test', 'port_mode': 'full'}
     state['discoveries'][0]['status'] = 'completed'
     page.locator('#refreshDiscoveriesBtn').click()
     expect(page.locator('#assetDiscoveryRuns')).to_contain_text('completed')
@@ -308,4 +313,23 @@ def test_inventory_controls_fit_mobile(browser, darkstar_server, theme):
     output = Path('test-results/playwright')
     output.mkdir(parents=True, exist_ok=True)
     page.screenshot(path=str(output / f'asset-discovery-mobile-{theme}.png'), full_page=True)
+    page.close()
+
+
+def test_discovery_unavailable_does_not_offer_an_appliance_picker(browser, darkstar_server):
+    from playwright.sync_api import expect
+    page = browser.new_page()
+    state = install_inventory(page, darkstar_server)
+    state['discovery_available'] = False
+    page.goto(darkstar_server, wait_until='networkidle')
+    page.locator('[data-tab="assets"]').click()
+    page.locator('#assetDiscoveryPanel > summary').click()
+    expect(page.locator('#startAssetDiscoveryBtn')).to_be_disabled()
+    expect(page.locator('#assetDiscoveryMessage')).to_contain_text('No discovery worker is online')
+    expect(page.locator('#discoveryApplianceInput')).to_have_count(0)
+    assert state['discoveries'] == []
+    state['discovery_available'] = True
+    page.locator('#refreshApprovedAssetsBtn').click()
+    expect(page.locator('#startAssetDiscoveryBtn')).to_be_enabled()
+    expect(page.locator('#assetDiscoveryMessage')).not_to_contain_text('No discovery worker is online')
     page.close()

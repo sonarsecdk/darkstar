@@ -1,5 +1,5 @@
 """Discovery authorization stays separate from customer scan approval."""
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import Mock
 
 import pytest
@@ -32,6 +32,10 @@ def api(monkeypatch):
         'node_id': node, 'capabilities': ['discovery', 'zap'], 'status': 'online',
         'last_seen_at': datetime.utcnow(),
     })
+    monkeypatch.setattr(webapp, 'list_available_scanner_nodes', lambda: [{
+        'node_id': 'node-discovery', 'capabilities': ['discovery'], 'status': 'online',
+        'last_seen_at': datetime.utcnow(),
+    }])
     monkeypatch.setattr(webapp, 'prepare_discovery', Mock(return_value=PLAN))
     monkeypatch.setattr(webapp, 'create_discovery_scan', Mock(return_value=9))
     monkeypatch.setattr(webapp, 'enqueue_scanner_job', Mock(return_value=11))
@@ -47,7 +51,7 @@ def api(monkeypatch):
                                          ('tenant_admin', 403), ('platform_admin', 200)])
 def test_only_platform_can_start_preapproval_discovery(api, role, status):
     response = api.post('/api/discoveries', headers={'Authorization': 'Bearer ' + role},
-                        json={'targets': '192.0.2.1', 'preferred_node_id': 'node-zap', 'port_mode': 'common'})
+                        json={'targets': '192.0.2.1', 'port_mode': 'common'})
     assert response.status_code == status
     webapp.replace_allowed_scan_targets.assert_not_called()
     if status == 200:
@@ -56,10 +60,56 @@ def test_only_platform_can_start_preapproval_discovery(api, role, status):
         job = webapp.enqueue_scanner_job.call_args
         assert job.args[5]['job_type'] == 'discovery'
         assert job.args[5]['discovery'] == PLAN
-        assert job.kwargs['preferred_node_id'] == 'node-zap'
+        assert job.kwargs.get('preferred_node_id') is None
     else:
         webapp.prepare_discovery.assert_not_called()
         webapp.enqueue_scanner_job.assert_not_called()
+
+
+def test_discovery_does_not_pin_a_worker_from_an_old_client(api):
+    response = api.post('/api/discoveries', headers={'Authorization': 'Bearer platform_admin'},
+                        json={'targets': '192.0.2.1', 'preferred_node_id': 'some-old-selection'})
+    assert response.status_code == 200
+    assert webapp.enqueue_scanner_job.call_args.kwargs.get('preferred_node_id') is None
+
+
+@pytest.mark.parametrize('changes', [
+    {'capabilities': ['zap']}, {'status': 'offline'}, {'revoked_at': 'today'},
+    {'last_seen_at': datetime.utcnow() - timedelta(minutes=4)}, {'last_seen_at': None},
+])
+def test_discovery_requires_an_online_capable_worker(api, monkeypatch, changes):
+    node = {'node_id': 'node-1', 'capabilities': ['discovery'], 'status': 'online',
+            'last_seen_at': datetime.utcnow(), **changes}
+    monkeypatch.setattr(webapp, 'list_available_scanner_nodes', lambda: [node])
+    headers = {'Authorization': 'Bearer platform_admin'}
+    assert api.get('/api/discoveries', headers=headers).json()['available'] is False
+    response = api.post('/api/discoveries', headers=headers, json={'targets': '192.0.2.1'})
+    assert response.status_code == 503
+    webapp.enqueue_scanner_job.assert_not_called()
+
+
+def test_appliance_tags_require_online_capability_and_installed_profile(api, monkeypatch):
+    def node(identifier, capabilities, **extra):
+        return {'node_id': identifier, 'name': identifier, 'capabilities': capabilities,
+                'status': 'online', 'last_seen_at': datetime.utcnow(), **extra}
+    monkeypatch.setattr(webapp, 'list_asset_inventory', lambda *a, **k: [{
+        'target': '192.0.2.1', 'approved': True, 'compatible_scanners': ['openvas', 'zap', 'nuclei'],
+    }])
+    monkeypatch.setattr(webapp, 'list_available_scanner_nodes', lambda: [
+        node('network', ['openvas']), node('web', ['zap']), node('no-policy', ['openvas']),
+        node('wrong-capability', ['discovery']), node('stale', ['zap'], last_seen_at=datetime.utcnow() - timedelta(minutes=4)),
+        node('revoked', ['zap'], revoked_at='today'), node('variant', ['scanner:nucleinetwork']),
+    ])
+    profiles = {'network': ['openvas', 'zap'], 'web': ['zap'], 'no-policy': [],
+                'wrong-capability': ['zap'], 'variant': ['nucleinetwork']}
+    monkeypatch.setattr(webapp, 'get_scanner_profiles', lambda node: {'items': [{'scanner': scanner} for scanner in profiles[node]]})
+    response = api.get('/api/asset-inventory', headers={'Authorization': 'Bearer platform_admin'})
+    assert response.status_code == 200
+    assert response.json()['scanner_appliances'] == {
+        'openvas': [{'node_id': 'network', 'name': 'network'}],
+        'zap': [{'node_id': 'web', 'name': 'web'}],
+        'nuclei': [{'node_id': 'variant', 'name': 'variant'}],
+    }
 
 
 @pytest.mark.parametrize('role', ['viewer', 'security_analyst', 'tenant_admin', 'platform_admin'])

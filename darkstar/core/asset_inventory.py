@@ -90,7 +90,7 @@ def list_asset_inventory(org, include_pending=False):
             approval = next((row for row, approved_scope in approval_scopes if approved_scope.allows(target)), {})
         addresses = json.loads(observation.get("addresses_json") or "[]")
         services = json.loads(observation.get("services_json") or "[]")
-        compatible = [] if target.startswith("*.") or "/" in target else ["openvas"]
+        compatible = ["openvas"] if services else []
         if any(service.get("url") for service in services):
             compatible.extend(["zap", "nuclei"])
         matching_rules = [set(rule["enabled_scanners"]) for rule, rule_scope in rule_scopes

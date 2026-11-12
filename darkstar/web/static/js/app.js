@@ -104,6 +104,8 @@ const state = {
     approvedTargetsOrgDb: null,
     assetInventory: [],
     assetInventoryAvailable: false,
+    assetScannerAppliances: {},
+    discoveryAvailable: false,
     assetMutationPending: false,
     discoverySubmitting: false,
     discoveryRuns: [],
@@ -2562,10 +2564,13 @@ const ASSET_SCANNER_LABELS = {openvas: 'OpenVAS', zap: 'ZAP', nuclei: 'Nuclei'};
 
 function assetScannerBadges(item) {
     const compatible = item.compatible_scanners || [];
-    if (!compatible.length) return '<span class="field-hint">Discover services to identify compatible scanners.</span>';
+    if (!compatible.length) return `<span class="field-hint">${item.last_attempt_at ? 'No services identified; reachability or filtering may need checking.' : 'Discover services to identify compatible scanners.'}</span>`;
     return '<div class="asset-scanner-badges">' + compatible.map(scanner => {
         const enabled = item.enabled_scanners == null || item.enabled_scanners.includes(scanner);
-        return `<span class="asset-scanner-badge ${enabled ? '' : 'disabled'}" title="${enabled ? 'Compatible service detected' : 'Disabled by a platform admin'}">${escapeHtml(ASSET_SCANNER_LABELS[scanner] || scanner)}${enabled ? '' : ' · disabled'}</span>`;
+        const appliances = state.assetScannerAppliances[scanner] || [];
+        const reason = scanner === 'openvas' ? 'Network services detected' : scanner === 'zap' ? 'Web application detected' : 'Web templates may apply';
+        return `<div class="asset-scanner-match"><span class="asset-scanner-badge ${enabled ? '' : 'disabled'}" title="${escapeHtml(reason)}">${escapeHtml(ASSET_SCANNER_LABELS[scanner] || scanner)}${enabled ? '' : ' · disabled'}</span>
+            <span class="field-hint">${escapeHtml(reason)} · ${appliances.length ? 'Available on: ' + appliances.map(node => escapeHtml(node.name)).join(', ') : 'No online appliance with this scanner configured'}</span></div>`;
     }).join('') + '</div>';
 }
 
@@ -2689,6 +2694,8 @@ function invalidateApprovedAssets({clearDrafts = true} = {}) {
     state.approvedTargetsOrgDb = null;
     state.assetInventory = [];
     state.assetInventoryAvailable = false;
+    state.assetScannerAppliances = {};
+    state.discoveryAvailable = false;
     state.discoveryRuns = [];
     document.getElementById('approvedAssetRows').innerHTML = '';
     document.getElementById('pendingAssetRows').innerHTML = '';
@@ -2696,8 +2703,6 @@ function invalidateApprovedAssets({clearDrafts = true} = {}) {
     document.getElementById('scanAssetChoices').textContent = 'Approved targets have not been loaded.';
     document.getElementById('selectAllScanAssetsBtn').disabled = true;
     document.getElementById('startAssetDiscoveryBtn').disabled = true;
-    document.getElementById('discoveryApplianceInput').disabled = true;
-    document.getElementById('discoveryApplianceInput').innerHTML = '<option value="">Choose an appliance</option>';
     document.getElementById('assetDiscoveryRuns').textContent = '';
     document.getElementById('assetDiscoveryProgress').classList.add('asset-section-empty');
     document.getElementById('pendingAssetsPanel').classList.add('asset-section-empty');
@@ -2727,6 +2732,7 @@ async function fetchAssetInventory() {
 function applyAssetInventory(inventory, approvals = []) {
     state.assetInventoryAvailable = inventory !== null;
     state.assetInventory = inventory?.items || approvals.map(item => ({...item, approved: true}));
+    state.assetScannerAppliances = inventory?.scanner_appliances || {};
     state.approvedTargets = state.assetInventory.filter(item => item.approved);
     state.approvedTargetsOrgDb = state.orgDb;
 }
@@ -2758,24 +2764,7 @@ async function loadApprovedAssets() {
 
 async function loadDiscoveryManagement() {
     if (state.role !== 'platform_admin' || state.tenantSwitchPending || !state.assetInventoryAvailable) return;
-    const orgDb = state.orgDb;
-    const version = ++state.discoveryVersion;
-    const select = document.getElementById('discoveryApplianceInput');
-    const previous = select.value;
-    try {
-        const result = await requestJson('/api/scanner-nodes/available');
-        if (state.orgDb !== orgDb || state.discoveryVersion !== version || state.role !== 'platform_admin') return;
-        const nodes = (result.items || []).filter(node => node.discovery_supported && scannerNodeIsActive(node));
-        select.innerHTML = '<option value="">Choose an appliance</option>' + nodes.map(node => `<option value="${escapeHtml(node.node_id)}">${escapeHtml(scannerApplianceLabel(node))}</option>`).join('');
-        if (nodes.some(node => node.node_id === previous)) select.value = previous;
-        else if (nodes.length === 1) select.value = nodes[0].node_id;
-        select.disabled = !nodes.length;
-        document.getElementById('startAssetDiscoveryBtn').disabled = !nodes.length || state.discoverySubmitting;
-        if (!nodes.length) document.getElementById('assetDiscoveryMessage').textContent = 'No connected appliance supports discovery. Connect a discovery-capable worker before starting.';
-        await refreshDiscoveries();
-    } catch (error) {
-        if (state.orgDb === orgDb && state.discoveryVersion === version) document.getElementById('assetDiscoveryMessage').textContent = error.message;
-    }
+    await refreshDiscoveries();
 }
 
 async function refreshDiscoveries() {
@@ -2786,6 +2775,12 @@ async function refreshDiscoveries() {
     try {
         const result = await requestJson('/api/discoveries');
         if (state.orgDb !== orgDb || state.discoveryVersion !== version || state.role !== 'platform_admin' || state.currentTab !== 'assets') return;
+        state.discoveryAvailable = result.available === true;
+        document.getElementById('startAssetDiscoveryBtn').disabled = !state.discoveryAvailable || state.discoverySubmitting;
+        const message = document.getElementById('assetDiscoveryMessage');
+        const unavailable = 'Discovery is currently unavailable. No discovery worker is online.';
+        if (!state.discoveryAvailable) message.textContent = unavailable;
+        else if (message.textContent === unavailable) message.textContent = '';
         const before = JSON.stringify(state.discoveryRuns.map(run => [run.id, run.status]));
         state.discoveryRuns = result.items || [];
         renderDiscoveryRuns();
@@ -2816,19 +2811,16 @@ function renderDiscoveryRuns() {
 
 document.getElementById('assetDiscoveryForm').addEventListener('submit', async event => {
     event.preventDefault();
-    if (state.role !== 'platform_admin' || state.tenantSwitchPending || state.discoverySubmitting || !state.assetInventoryAvailable || state.approvedTargetsOrgDb !== state.orgDb) return;
+    if (state.role !== 'platform_admin' || state.tenantSwitchPending || state.discoverySubmitting || !state.discoveryAvailable || !state.assetInventoryAvailable || state.approvedTargetsOrgDb !== state.orgDb) return;
     const orgDb = state.orgDb;
     const sessionVersion = state.sessionVersion;
     const message = document.getElementById('assetDiscoveryMessage');
-    const appliance = document.getElementById('discoveryApplianceInput').value;
-    if (!appliance) { message.textContent = 'Choose a connected discovery appliance.'; return; }
     state.discoverySubmitting = true;
     document.getElementById('startAssetDiscoveryBtn').disabled = true;
     message.textContent = 'Validating targets and queuing discovery…';
     try {
         const result = await requestJson('/api/discoveries', {method: 'POST', body: JSON.stringify({
             targets: document.getElementById('discoveryTargetsInput').value.trim(),
-            preferred_node_id: appliance,
             port_mode: document.getElementById('discoveryPortModeInput').value,
         })});
         if (state.orgDb !== orgDb || state.sessionVersion !== sessionVersion) return;
@@ -2839,7 +2831,7 @@ document.getElementById('assetDiscoveryForm').addEventListener('submit', async e
     } finally {
         if (state.orgDb === orgDb && state.sessionVersion === sessionVersion) {
             state.discoverySubmitting = false;
-            document.getElementById('startAssetDiscoveryBtn').disabled = document.getElementById('discoveryApplianceInput').disabled;
+            document.getElementById('startAssetDiscoveryBtn').disabled = !state.discoveryAvailable;
         }
     }
 });

@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
-    <link rel="stylesheet" href="/static/css/app.css?v=20261112-asset-discovery" />
+    <link rel="stylesheet" href="/static/css/app.css?v=20261112-automatic-discovery" />
     <link rel="stylesheet" href="/static/css/themes.css?v=20261012" />
 </head>
 <body data-authenticated="{{ 'true' if logged_in else 'false' }}" data-organization="{{ organization }}" data-org-db="{{ org_db }}" data-role="{{ role }}">
@@ -674,7 +674,7 @@
                     </div>
                 </section>
                 <details id="assetDiscoveryPanel" class="card asset-discovery-panel admin-only hidden">
-                    <summary><span>Import and discover</span><span class="field-hint">Find services before publishing assets to your customer.</span></summary>
+                    <summary><span>Import and discover</span><span class="field-hint">Find services and suitable scanners automatically, then approve the assets.</span></summary>
                     <form id="assetDiscoveryForm" class="form-vertical">
                         <div class="form-group">
                             <label for="discoveryTargetsInput">IPs, domains, network ranges or web URLs</label>
@@ -682,11 +682,6 @@
                             <small class="field-hint">One target per line. A URL checks that application endpoint; an IP or domain discovers its services. Results remain pending until you approve them.</small>
                         </div>
                         <div class="asset-discovery-options">
-                            <div class="form-group">
-                                <label for="discoveryApplianceInput">Discovery appliance</label>
-                                <select id="discoveryApplianceInput" class="filter-select" required disabled><option value="">Loading available appliances…</option></select>
-                                <small class="field-hint">Choose a connected appliance that can reach this customer's network.</small>
-                            </div>
                             <div class="form-group">
                                 <label for="discoveryPortModeInput">Port coverage</label>
                                 <select id="discoveryPortModeInput" class="filter-select">
@@ -698,7 +693,7 @@
                         </div>
                         <div class="asset-actions">
                             <button id="startAssetDiscoveryBtn" class="btn-primary" type="submit" disabled>Start discovery</button>
-                            <span class="field-hint">Discovery finds services. It does not run vulnerability policies.</span>
+                            <span class="field-hint">Discovery runs automatically and identifies suitable scanners. Vulnerability scans start separately after approval.</span>
                         </div>
                     </form>
                     <p id="assetDiscoveryMessage" class="form-message" role="status"></p>
@@ -751,7 +746,7 @@
                     </div>
                     <div class="table-container">
                         <table class="data-table asset-inventory-table">
-                            <thead><tr><th class="tenant-admin-only hidden">Select</th><th>Target</th><th>Services and scanner access</th></tr></thead>
+                            <thead><tr><th class="tenant-admin-only hidden">Select</th><th>Target</th><th>Services and suitable scanners</th></tr></thead>
                             <tbody id="approvedAssetRows"></tbody>
                         </table>
                     </div>
@@ -1342,6 +1337,6 @@
         </div>
     </div>
 
-    <script src="/static/js/app.js?v=20261112-asset-discovery"></script>
+    <script src="/static/js/app.js?v=20261112-automatic-discovery"></script>
 </body>
 </html>

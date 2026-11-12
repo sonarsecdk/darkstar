@@ -61,6 +61,7 @@ def test_pending_discovery_does_not_grant_scope_and_is_tenant_isolated(tenants):
     pending = inventory.list_asset_inventory(org, include_pending=True)
     assert [row["target"] for row in pending] == ["192.0.2.1", "example.test"]
     assert not any(row["approved"] for row in pending)
+    assert pending[0]["compatible_scanners"] == []  # DNS alone does not identify services.
     assert pending[1]["compatible_scanners"] == ["openvas", "zap", "nuclei"]
     assert pending[1]["source_node_id"] == "node-a"
     assert inventory.list_asset_inventory(other, include_pending=True) == []
@@ -92,6 +93,14 @@ def test_domain_approval_requires_explicit_addresses_and_is_atomic(tenants, monk
     with pytest.raises(scan_scope.ScanScopeError, match="203.0.113.1"):
         approve(org, ["example.test"])
     assert "203.0.113.1" not in {row["target"] for row in db.get_allowed_scan_targets(org)}
+
+
+def test_network_only_services_do_not_suggest_web_scanners(tenants):
+    org = tenants[0]
+    discover(org, [{"target": "192.0.2.1", "addresses": ["192.0.2.1"],
+                    "services": [{"port": 22, "protocol": "tcp", "service": "ssh"}]}])
+    asset = inventory.list_asset_inventory(org, include_pending=True)[0]
+    assert asset["compatible_scanners"] == ["openvas"]
 
 
 def test_approval_and_scanner_settings_require_idle_current_organization(tenants):
@@ -253,7 +262,7 @@ def test_large_discovery_and_approval_audits_fit_existing_text_column(tenants, m
     assert {target for row in entries for target in json.loads(row["metadata"])["targets"]} == set(domains + ["192.0.2.1"])
 
 
-def test_owned_worker_result_roundtrip_keeps_discovery_context_and_does_not_approve(tenants, monkeypatch):
+def test_automatic_worker_result_roundtrip_keeps_discovery_context_and_does_not_approve(tenants, monkeypatch):
     """Use the real leased-job shape; a partial lease record cannot authorize results."""
     from fastapi.testclient import TestClient
     from darkstar import webapp
@@ -265,11 +274,14 @@ def test_owned_worker_result_roundtrip_keeps_discovery_context_and_does_not_appr
     scan_id = inventory.create_discovery_scan(org, "Discovery roundtrip", "192.0.2.1", plan,
                                              "platform", db.get_organization_id(org))
     node = db.create_scanner_node("inventory_test_" + uuid.uuid4().hex[:12], capabilities=["discovery"])
+    web_node = db.create_scanner_node("inventory_test_" + uuid.uuid4().hex[:12], capabilities=["zap"])
     job_id = None
     try:
         payload = {"job_type": "discovery", "discovery": plan, "authorized_by": "platform"}
         job_id = db.enqueue_scanner_job(org, scan_id, "Discovery roundtrip", "discovery", "192.0.2.1",
-                                       payload, scanner="discovery", preferred_node_id=node["node_id"])
+                                       payload, scanner="discovery")
+        assert db.get_scanner_job_for_scan(org, scan_id)["preferred_node_id"] is None
+        assert db.claim_next_scanner_job(web_node["node_id"], capabilities=["zap"]) is None
         job = db.claim_next_scanner_job(node["node_id"], capabilities=["discovery"])
         assert job["id"] == job_id
         leased = db.extend_scanner_job_lease(job_id, node["node_id"])
@@ -296,3 +308,5 @@ def test_owned_worker_result_roundtrip_keeps_discovery_context_and_does_not_appr
             db.complete_scanner_job(job_id, node["node_id"], "stopped")
         db.revoke_scanner_node(node["node_id"])
         db.delete_revoked_scanner_node(node["node_id"])
+        db.revoke_scanner_node(web_node["node_id"])
+        db.delete_revoked_scanner_node(web_node["node_id"])

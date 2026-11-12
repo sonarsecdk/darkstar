@@ -74,6 +74,10 @@ All members can view their organization's name, approved assets, and scan histor
 Debug and scan execution logs require a tenant or platform admin. Endpoint agents
 and scanner workers continue using their dedicated machine tokens.
 
+Platform administrators can discover candidate assets before approval and review
+their services under **Approved Assets**. See [Asset discovery and approval](asset-discovery.md)
+for whole-host approvals, DNS verification, scanner access, and ZAP URL selection.
+
 Platform administrators can create an organization from **Oversight → New
 organization**. Enter a name and select **Create organization**. The organization
 appears in the overview and tenant selector immediately, without another login.

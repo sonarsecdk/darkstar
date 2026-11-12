@@ -434,8 +434,12 @@ class ZAPScanner:
     def _stop_daemon(self) -> None:
         """Gracefully shut down the ZAP daemon."""
         if self.policy_name:
-            result = self._zap_api("JSON/ascan/action/removeScanPolicy/?" + urlencode({"scanPolicyName": self.policy_name}))
-            if not result or result.get("Result") != "OK":
+            try:
+                result = self._zap_api("JSON/ascan/action/removeScanPolicy/?" + urlencode({"scanPolicyName": self.policy_name}))
+                if not isinstance(result, dict) or result.get("Result") != "OK":
+                    logger.warning("Could not remove imported ZAP policy %s", self.policy_name)
+            except RuntimeError:
+                # The API already logged the reason; still stop the daemon.
                 logger.warning("Could not remove imported ZAP policy %s", self.policy_name)
             self.policy_name = None
         try:
@@ -446,7 +450,7 @@ class ZAPScanner:
             )
             time.sleep(3)
         except Exception as exc:
-            logger.debug("Could not request ZAP shutdown: %s", exc)
+            logger.debug("Could not request ZAP shutdown (%s)", type(exc).__name__)
 
         if self._zap_process:
             try:
@@ -458,17 +462,39 @@ class ZAPScanner:
                 except Exception as exc:
                     logger.debug("Could not kill ZAP process: %s", exc)
 
-    def _zap_api(self, path: str) -> dict | list | None:
-        """Call the ZAP JSON API and return parsed response."""
+    def _zap_api(self, path: str) -> dict | list:
+        """Return JSON or fail with ZAP's reason, without exposing the API key."""
+        import urllib.error
         import urllib.request
+
+        def fail(reason):
+            reason = str(reason).replace(self.API_KEY, "[redacted]")[:1000]
+            message = f"ZAP API {path.split('?', 1)[0]} failed: {reason}"
+            logger.warning("%s", message)
+            raise RuntimeError(message) from None
+
+        error = None
         try:
             separator = "&" if "?" in path else "?"
             url = f"http://127.0.0.1:{self._port}/{path}{separator}apikey={self.API_KEY}"
             with urllib.request.urlopen(url, timeout=30) as resp:
-                return json.loads(resp.read().decode())
-        except Exception as exc:
-            logger.warning("ZAP API call failed (%s): %s", path, exc)
-            return None
+                result = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            error = f"HTTP {exc.code}"
+            try:
+                with exc:
+                    result = json.loads(exc.read(65536).decode())
+            except (OSError, ValueError):
+                result = None
+        except (OSError, ValueError) as exc:
+            fail(exc)
+        if isinstance(result, dict) and result.get("code"):
+            error = ": ".join(str(result[key]) for key in ("code", "message", "detail") if result.get(key))
+        if error:
+            fail(error)
+        if not isinstance(result, (dict, list)):
+            fail("Invalid JSON response")
+        return result
 
     def _load_policy(self) -> None:
         """Import the selected file and use the name assigned by ZAP."""
@@ -503,6 +529,16 @@ class ZAPScanner:
         url = _ensure_scheme(target)
         hostname = _parse_host(url)
         findings: list[dict] = []
+
+        # A completed spider can have fetched nothing. Check a fresh response,
+        # including HTTP error pages, before treating this target as scanned.
+        accessed = self._zap_api("JSON/core/action/accessUrl/?" + urlencode({"url": url, "followRedirects": "false"}))
+        messages = accessed.get("accessUrl", []) if isinstance(accessed, dict) else []
+        if not isinstance(messages, list) or not any(
+            isinstance(message, dict) and re.match(r"HTTP/\S+ [1-5]\d\d(?:\s|$)", str(message.get("responseHeader") or ""))
+            for message in messages
+        ):
+            raise RuntimeError(f"ZAP received no HTTP response from {url}; check that the target is reachable from the scanner appliance")
 
         # Spider the target
         logger.info("ZAP: spidering %s", url)

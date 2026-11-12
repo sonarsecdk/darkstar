@@ -294,6 +294,9 @@ def _install_dashboard_mocks(page, base_url, role="tenant_admin"):
             items = [item for item in profiles if (not scanner or scanner == item["scanner"]) and search in item["name"].lower()]
             _json(route, {"items": items, "total": len(items), "scanners": ["openvas", "zap"], "updated_at": "2026-10-22T12:00:00"})
             return
+        if path in {"/api/asset-inventory", "/api/discoveries"}:
+            _json(route, {"detail": "Not available in this legacy fixture"}, status=404)
+            return
         if path == "/api/scan-scope" and method == "GET":
             _json(route, {"items": [{"target": "192.0.2.0/24", "approved_by": "platform@example.test"}]})
             return

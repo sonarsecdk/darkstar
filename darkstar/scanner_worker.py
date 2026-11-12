@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+import json
 import os
 import select
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -201,7 +203,9 @@ class ScannerWorker:
         job_id = int(job["id"])
         try:
             selections = (job.get("payload") or {}).get("selections") or []
-            if not selections:
+            if (job.get("payload") or {}).get("job_type") == "discovery":
+                status, error = self._run_discovery(job)
+            elif not selections:
                 status, error = self._run_process(job)
             else:
                 installed = {(item["scanner"], item["id"]) for item in discover_scanner_profiles()}
@@ -220,6 +224,8 @@ class ScannerWorker:
                         component_status, error = "failed", "Selected profile is no longer installed on this appliance"
                     else:
                         payload = dict(job["payload"], mode=None, scanner=scanner, profile_id=selection["profile_id"])
+                        if selection.get("targets"):
+                            payload["targets"] = selection["targets"]
                         component_status, error = self._run_process(dict(job, payload=payload))
                     stopped = self.component_status(job_id, scanner, component_status, error) or component_status == "stopped"
                     if component_status == "failed":
@@ -235,9 +241,27 @@ class ScannerWorker:
         finally:
             self.active_threads.pop(job_id, None)
 
-    def _run_process(self, job: dict) -> tuple[str, str | None]:
+    def _run_discovery(self, job: dict) -> tuple[str, str | None]:
+        """Use the same process group, log streaming and stop handling as scans."""
+        with tempfile.TemporaryDirectory(prefix="darkstar-discovery-") as directory:
+            plan_path = Path(directory) / "plan.json"
+            result_path = Path(directory) / "results.json"
+            plan_path.write_text(json.dumps(job["payload"]["discovery"]))
+            command = [sys.executable, "-m", "darkstar.asset_discovery",
+                       "--input", str(plan_path), "--output", str(result_path)]
+            status, error = self._run_process(job, command=command)
+            if status != "stopped" and result_path.exists():
+                result = self._api("POST", f"/api/scanner-workers/jobs/{job['id']}/discovery-results",
+                                   json={"items": json.loads(result_path.read_text())})
+                if result.get("stop_requested"):
+                    return "stopped", "Discovery stopped by user"
+            elif status == "completed":
+                return "failed", "Discovery finished without a result file"
+            return status, error
+
+    def _run_process(self, job: dict, command: list[str] | None = None) -> tuple[str, str | None]:
         job_id = int(job["id"])
-        command = self.build_command(job)
+        command = command or self.build_command(job)
         log_prefix = f"[{self.name}]"
         output_tail: deque[str] = deque(maxlen=20)
         stop_requested = False

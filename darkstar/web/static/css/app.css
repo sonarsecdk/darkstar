@@ -862,6 +862,17 @@ body {
 }
 
 @media (max-width: 768px) {
+    .main-dashboard {
+        height: auto;
+        min-height: 100vh;
+        overflow: visible;
+    }
+
+    .content-area {
+        flex: 1 0 auto;
+        overflow-y: visible;
+    }
+
     .header {
         flex-wrap: wrap;
         gap: var(--space-md);
@@ -2791,8 +2802,7 @@ textarea::selection {
     }
 
     .tab-nav {
-        position: sticky;
-        top: 0;
+        position: relative;
         padding: 12px;
     }
 

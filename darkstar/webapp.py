@@ -43,6 +43,16 @@ from dotenv import load_dotenv
 _event_loop = None
 
 from .core.scan_scope import ScanScope, ScanScopeError, target_host
+from .asset_discovery import prepare_discovery, validate_discovery_plan
+from .core.asset_inventory import (
+    approve_inventory_targets,
+    create_discovery_scan,
+    get_asset_scanner_rules,
+    list_asset_inventory,
+    save_discovery_results,
+    update_asset_scanners,
+)
+from .core.scanner_targets import require_enabled_scanner, zap_targets
 
 from .core.db_helper import (
     create_scan_components,
@@ -482,6 +492,40 @@ class RiskAcceptanceRequest(BaseModel):
 
 class ScanScopeRequest(BaseModel):
     targets: list[str] = Field(max_length=2000)
+
+
+class DiscoveryRequest(BaseModel):
+    targets: str = Field(min_length=1, max_length=65536)
+    preferred_node_id: str = Field(min_length=1, max_length=64)
+    port_mode: Literal["common", "full"] = "full"
+
+
+class InventoryApprovalRequest(BaseModel):
+    targets: list[str] = Field(min_length=1, max_length=2000)
+    enabled_scanners: list[Literal["openvas", "zap", "nuclei"]] | None = None
+
+
+class AssetScannersRequest(BaseModel):
+    target: str = Field(min_length=1, max_length=253)
+    enabled_scanners: list[Literal["openvas", "zap", "nuclei"]] | None = None
+
+
+class DiscoveredService(BaseModel):
+    port: int = Field(ge=1, le=65535)
+    protocol: Literal["tcp"] = "tcp"
+    service: str = Field(default="unknown", max_length=255)
+    url: str | None = Field(default=None, max_length=4096)
+
+
+class DiscoveredAsset(BaseModel):
+    target: str = Field(min_length=1, max_length=253)
+    addresses: list[str] = Field(max_length=256)
+    services: list[DiscoveredService] = Field(max_length=4096)
+    error: str | None = Field(default=None, max_length=4000)
+
+
+class DiscoveryResultsRequest(BaseModel):
+    items: list[DiscoveredAsset] = Field(max_length=256)
 
 
 class ScannerSelection(BaseModel):
@@ -1144,6 +1188,144 @@ def scan_scope(request: Request):
     return {"items": get_allowed_scan_targets(_get_org_db(request))}
 
 
+def _inventory_response(request: Request) -> dict:
+    items = list_asset_inventory(_get_org_db(request), include_pending=_get_role(request) == "platform_admin")
+    return {"items": items, "pending_count": sum(not item["approved"] for item in items)}
+
+
+def _asset_actor(request: Request) -> str:
+    if getattr(request.state, "api_key_id", None):
+        return f"api_key:{request.state.api_key_id}"
+    return request.session.get("user_email") or request.session.get("organization") or "platform_admin"
+
+
+@app.get("/api/asset-inventory")
+def asset_inventory(request: Request):
+    return _inventory_response(request)
+
+
+@app.post("/api/asset-inventory/approve")
+def approve_assets(request: Request, body: InventoryApprovalRequest):
+    _require_platform_admin(request)
+    try:
+        approve_inventory_targets(
+            _get_org_db(request), body.targets,
+            actor=_asset_actor(request),
+            expected_org_id=request.state.authenticated_org_id,
+            enabled_scanners=body.enabled_scanners,
+        )
+    except OrganizationConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _inventory_response(request)
+
+
+@app.put("/api/asset-inventory/scanners")
+def asset_scanners(request: Request, body: AssetScannersRequest):
+    _require_platform_admin(request)
+    try:
+        update_asset_scanners(
+            _get_org_db(request), body.target, body.enabled_scanners,
+            actor=_asset_actor(request),
+            expected_org_id=request.state.authenticated_org_id,
+        )
+    except OrganizationConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _inventory_response(request)
+
+
+def _node_supports_discovery(node: dict) -> bool:
+    capabilities = set(node.get("capabilities") or [])
+    return bool(capabilities.intersection({"*", "all", "discovery", "scanner:discovery"}))
+
+
+@app.get("/api/discoveries")
+def discoveries(request: Request):
+    _require_platform_admin(request)
+    return {"items": [item for item in get_scan_history(_get_org_db(request), limit=100)
+                      if item.get("scan_mode") == "discovery"]}
+
+
+@app.post("/api/discoveries")
+def start_discovery(request: Request, body: DiscoveryRequest):
+    _require_platform_admin(request)
+    org_db = _get_org_db(request)
+    node = get_scanner_node_record(body.preferred_node_id)
+    if not node or node.get("revoked_at") or not _node_supports_discovery(node):
+        raise HTTPException(status_code=400, detail="Choose an appliance configured for discovery")
+    last_seen = node.get("last_seen_at")
+    if isinstance(last_seen, str):
+        last_seen = datetime.fromisoformat(last_seen.replace("Z", "+00:00")).replace(tzinfo=None)
+    if node.get("status") not in {"online", "busy"} or not last_seen or (datetime.utcnow() - last_seen).total_seconds() > 180:
+        raise HTTPException(status_code=400, detail="The discovery appliance is offline")
+    scan_id = None
+    try:
+        plan = prepare_discovery(body.targets, body.port_mode)
+        actor = _asset_actor(request)
+        targets = ",".join(seed["target"] for seed in plan["seeds"])
+        scan_id = create_discovery_scan(
+            org_db, "Asset discovery", targets, plan, actor,
+            expected_org_id=request.state.authenticated_org_id,
+        )
+        enqueue_scanner_job(
+            org_db, scan_id, "Asset discovery", "discovery", targets,
+            {"job_type": "discovery", "discovery": plan, "authorized_by": actor},
+            scanner="discovery", preferred_node_id=body.preferred_node_id,
+        )
+    except Exception as exc:
+        if scan_id is not None:
+            update_scan_status(org_db, scan_id, "failed", error_message=str(exc)[:4000])
+        if isinstance(exc, OrganizationConflictError):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if isinstance(exc, ValueError):
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise
+    insert_scan_log(org_db, scan_id, "Discovery authorized by platform admin; results remain pending approval", "info")
+    return {"ok": True, "scan_id": scan_id, "status": "queued"}
+
+
+def _is_discovery_job(job: dict) -> bool:
+    return (job.get("scanner") == "discovery" and job.get("scan_mode") == "discovery"
+            and (job.get("payload") or {}).get("job_type") == "discovery")
+
+
+def _scan_target_routes(org_db: str, body: ScanStartRequest) -> dict[str, str]:
+    """Resolve web endpoints once per queued job, retaining its approved assets."""
+    targets = _split_scan_targets(body.targets)
+    scanners = [item.scanner for item in body.selections] or [body.scanner]
+    rules = get_asset_scanner_rules(org_db)
+    routes = {}
+    inventory = list_asset_inventory(org_db) if "zap" in scanners else []
+    try:
+        for scanner in scanners:
+            require_enabled_scanner(targets, scanner, rules)
+            resolved = zap_targets(targets, inventory) if scanner == "zap" else targets
+            require_enabled_scanner(resolved, scanner, rules)
+            _require_scan_scope(org_db, ",".join(resolved))
+            if scanner:
+                routes[scanner] = ",".join(resolved)
+    except ScanScopeError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return routes
+
+
+def _check_job_asset_permissions(job: dict) -> None:
+    """Recheck queued/scheduled work after an administrator changes access."""
+    payload = job.get("payload") or {}
+    original = _split_scan_targets(job["targets"])
+    rules = get_asset_scanner_rules(job["org_db_name"])
+    selections = payload.get("selections") or [{"scanner": payload.get("scanner") or job.get("scanner"),
+                                                "targets": payload.get("targets") or job["targets"]}]
+    for selection in selections:
+        require_enabled_scanner(original, selection.get("scanner"), rules)
+        resolved = selection.get("targets") or job["targets"]
+        _require_scan_scope(job["org_db_name"], resolved)
+        require_enabled_scanner(_split_scan_targets(resolved), selection.get("scanner"), rules)
+
+
 @app.put("/api/scan-scope")
 def update_scan_scope(request: Request, body: ScanScopeRequest):
     org_db = _get_org_db(request)
@@ -1164,6 +1346,7 @@ def _queue_scan(org_db: str, body: ScanStartRequest, schedule_id: int | None = N
     """Create a scan record and enqueue it for scanner workers."""
     catalog = _validate_scan_payload(body)
     _require_scan_scope(org_db, body.targets)
+    routes = _scan_target_routes(org_db, body)
     if not allow_overlap:
         conflicting_scan = _active_scan_conflict(org_db, body)
         if conflicting_scan:
@@ -1189,8 +1372,11 @@ def _queue_scan(org_db: str, body: ScanStartRequest, schedule_id: int | None = N
         )
         payload = body.dict()
         if body.selections:
-            payload["selections"] = [dict(item.dict(), profile_name=catalog[(item.scanner, item.profile_id)]["name"]) for item in body.selections]
+            payload["selections"] = [dict(item.dict(), profile_name=catalog[(item.scanner, item.profile_id)]["name"],
+                                          targets=routes[item.scanner]) for item in body.selections]
             create_scan_components(org_db, scan_id, payload["selections"])
+        elif body.scanner:
+            payload["targets"] = routes[body.scanner]
         # The job is pinned to the appliance; all selections were checked above.
         scanner = body.selections[0].scanner if body.selections else body.scanner
         enqueue_scanner_job(
@@ -2341,6 +2527,7 @@ def available_scanner_nodes(request: Request):
                 "last_seen_at": node.get("last_seen_at"),
                 "running_jobs": node.get("running_jobs") or 0,
                 "max_parallel_jobs": node.get("max_parallel_jobs") or 1,
+                "discovery_supported": _node_supports_discovery(node),
             }
         )
     return {"items": items}
@@ -2431,11 +2618,55 @@ def scanner_worker_claim(request: Request, body: ScannerClaimRequest):
     )
     if job:
         try:
-            _require_scan_scope(job["org_db_name"], job["targets"])
-        except HTTPException as exc:
-            complete_scanner_job(job["id"], node["node_id"], "failed", str(exc.detail))
+            if _is_discovery_job(job):
+                payload = job["payload"]
+                plan = payload.get("discovery") or {}
+                if not payload.get("authorized_by") or not plan.get("seeds") or not plan.get("authorized_targets"):
+                    raise HTTPException(status_code=403, detail="Discovery job has no platform authorization")
+                validate_discovery_plan(plan)
+                if job["targets"] != ",".join(seed["target"] for seed in plan["seeds"]):
+                    raise HTTPException(status_code=403, detail="Discovery scope does not match its authorization")
+            else:
+                _require_scan_scope(job["org_db_name"], job["targets"])
+                _check_job_asset_permissions(job)
+        except (HTTPException, ValueError) as exc:
+            detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+            complete_scanner_job(job["id"], node["node_id"], "failed", str(detail))
             return {"job": None}
     return {"job": job}
+
+
+@app.post("/api/scanner-workers/jobs/{job_id}/discovery-results")
+def scanner_worker_discovery_results(request: Request, job_id: int, body: DiscoveryResultsRequest):
+    node = _get_scanner_node(request)
+    job = extend_scanner_job_lease(job_id, node["node_id"])
+    if not job or job.get("status") not in {"running", "stopping"} or not _is_discovery_job(job):
+        raise HTTPException(status_code=404, detail="Active discovery job not found or not owned by this node")
+    if job["status"] == "stopping":
+        return {"ok": False, "saved": 0, "stop_requested": True}
+    plan = job["payload"]["discovery"]
+    try:
+        validate_discovery_plan(plan)
+        hosts = {seed["host"] for seed in plan["seeds"]}
+        if any(item.target not in hosts for item in body.items):
+            raise ValueError("Discovery result is outside the submitted target scope")
+        if sum(len(item.services) for item in body.items) > 4096:
+            raise ValueError("Discovery result exceeds the service limit")
+        for item in body.items:
+            seeds = [seed for seed in plan["seeds"] if seed["host"] == item.target]
+            addresses = {address for seed in seeds for address in seed["addresses"]}
+            if not set(item.addresses).issubset(addresses):
+                raise ValueError("Discovery addresses are outside the authorized snapshot")
+            if all(seed["kind"] == "url" for seed in seeds):
+                urls = {seed["url"] for seed in seeds}
+                ports = {urlparse(url).port or (443 if urlparse(url).scheme == "https" else 80) for url in urls}
+                if any(service.port not in ports or (service.url and service.url not in urls) for service in item.services):
+                    raise ValueError("Discovery services exceed the submitted URL scope")
+        count = save_discovery_results(job["org_db_name"], job["scan_id"], node["node_id"],
+                                       [item.dict() for item in body.items], plan=plan)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "saved": count}
 
 
 @app.post("/api/scanner-workers/jobs/{job_id}/logs")
@@ -2447,7 +2678,7 @@ def scanner_worker_logs(request: Request, job_id: int, body: ScannerLogRequest):
     messages = [str(message) for message in (body.messages or []) if str(message).strip()]
     if messages:
         insert_scan_logs_batch(job["org_db_name"], job["scan_id"], messages, body.level or "info")
-        if manager.has_connections(job["scan_id"]) and _event_loop:
+        if not _is_discovery_job(job) and manager.has_connections(job["scan_id"]) and _event_loop:
             for message in messages:
                 try:
                     asyncio.run_coroutine_threadsafe(
@@ -2470,14 +2701,17 @@ def scanner_worker_complete(request: Request, job_id: int, body: ScannerComplete
     job = complete_scanner_job(job_id, node["node_id"], body.status, body.error_message)
     if not job:
         raise HTTPException(status_code=404, detail="Scanner job not found or not owned by this node")
-    if body.status == "completed":
+    if _is_discovery_job(job):
+        return {"ok": True}
+    status = job.get("status") or body.status
+    if status == "completed":
         recalculate_vulnerability_scores(job["org_db_name"])
-    _notify_scan_finished(job["org_db_name"], job["scan_id"], body.status)
+    _notify_scan_finished(job["org_db_name"], job["scan_id"], status)
     if manager.has_connections(job["scan_id"]) and _event_loop:
         asyncio.run_coroutine_threadsafe(
             manager.broadcast(job["scan_id"], {
-                "type": body.status,
-                "message": body.error_message or f"Scan {body.status}",
+                "type": status,
+                "message": body.error_message or f"Scan {status}",
                 "timestamp": datetime.utcnow().isoformat(),
             }),
             _event_loop,
@@ -2537,6 +2771,8 @@ def recon_subdomains(
 def scans(request: Request, limit: int = 50):
     org_db = _get_org_db(request)
     items = get_scan_history(org_db, limit=limit)
+    if _get_role(request) != "platform_admin":
+        items = [item for item in items if item.get("scan_mode") != "discovery"]
     if _role_rank(_get_role(request)) < _role_rank("tenant_admin"):
         for scan in items:
             # Failed scans can include execution output in their error message.
@@ -2552,6 +2788,8 @@ def scan_detail(request: Request, scan_id: int):
     scan = get_scan_record(org_db, scan_id)
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
+    if scan.get("scan_mode") == "discovery":
+        _require_platform_admin(request)
     return {
         "scan": scan,
         "components": get_scan_components(org_db, scan_id) if scan.get("scan_mode") == "selection" else [],
@@ -2582,6 +2820,8 @@ def stop_scan(request: Request, scan_id: int):
     scan = get_scan_record(org_db, scan_id)
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
+    if scan.get("scan_mode") == "discovery":
+        _require_platform_admin(request)
     if scan.get("status") not in {"queued", "running", "stopping"}:
         return {"ok": True, "scan_id": scan_id, "status": scan.get("status")}
 
@@ -2631,6 +2871,9 @@ def get_scan_logs_api(request: Request, scan_id: int, limit: int = 500):
     """Get execution logs for a specific scan."""
     _require_min_role(request, "tenant_admin")
     org_db = _get_org_db(request)
+    scan = get_scan_record(org_db, scan_id)
+    if scan and scan.get("scan_mode") == "discovery":
+        _require_platform_admin(request)
     logs = get_scan_logs(org_db, scan_id, limit)
     return {"items": logs}
 
@@ -2754,6 +2997,7 @@ def create_schedule(request: Request, body: ScheduleRequest):
     org_db = _get_org_db(request)
     _validate_scan_payload(body)
     _require_scan_scope(org_db, body.targets)
+    _scan_target_routes(org_db, body)
     try:
         schedule_id = create_scan_schedule(
             org_db,
@@ -3745,7 +3989,8 @@ async def websocket_endpoint(websocket: WebSocket, scan_id: int):
     except HTTPException:
         await websocket.close(code=1008)
         return
-    if not get_scan_record(org_db, scan_id):
+    scan = get_scan_record(org_db, scan_id)
+    if not scan or (scan.get("scan_mode") == "discovery" and _get_role(websocket) != "platform_admin"):
         await websocket.close(code=1008)
         return
     await manager.connect(websocket, scan_id)

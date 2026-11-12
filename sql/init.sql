@@ -487,3 +487,21 @@ CREATE TABLE IF NOT EXISTS allowed_scan_targets (
         approved_by VARCHAR(255) NOT NULL,
         approved_at DATETIME NOT NULL
     );
+
+CREATE TABLE IF NOT EXISTS asset_inventory (
+    target VARCHAR(253) NOT NULL PRIMARY KEY,
+    addresses_json TEXT NOT NULL,
+    services_json LONGTEXT NOT NULL,
+    discovered_at DATETIME DEFAULT NULL,
+    last_attempt_at DATETIME NOT NULL,
+    source_node_id VARCHAR(64) NOT NULL,
+    error TEXT DEFAULT NULL,
+    last_scan_id INT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS asset_scanner_settings (
+    target VARCHAR(253) NOT NULL PRIMARY KEY,
+    scanners_json TEXT NOT NULL,
+    updated_by VARCHAR(255) NOT NULL,
+    updated_at DATETIME NOT NULL
+);

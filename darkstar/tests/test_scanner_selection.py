@@ -23,6 +23,8 @@ SELECTIONS = [{"scanner": item["scanner"], "profile_id": item["id"]} for item in
 @pytest.fixture
 def catalog(monkeypatch):
     monkeypatch.setattr(webapp, "get_allowed_scan_targets", lambda org: [{"target": "192.0.2.1"}])
+    monkeypatch.setattr(webapp, "get_asset_scanner_rules", lambda org: [])
+    monkeypatch.setattr(webapp, "list_asset_inventory", lambda org: [])
     monkeypatch.setattr(webapp, "get_scanner_node_record", lambda node: {"node_id": node, "capabilities": ["*"]})
     monkeypatch.setattr(webapp, "get_scanner_profiles", lambda node: {"items": CATALOG, "updated_at": "2026-10-22T12:00:00"})
 
@@ -143,7 +145,7 @@ def test_queue_keeps_individual_profiles_and_names(catalog, monkeypatch):
     assert webapp._queue_scan("tenant_db", body) == 42
     payload = enqueue.call_args.kwargs["payload"]
     assert payload["mode"] is None and payload["scanner"] is None
-    assert payload["selections"] == [dict(item, profile_name=profile["name"]) for item, profile in zip(SELECTIONS, CATALOG)]
+    assert payload["selections"] == [dict(item, profile_name=profile["name"], targets="192.0.2.1") for item, profile in zip(SELECTIONS, CATALOG)]
     components.assert_called_once_with("tenant_db", 42, payload["selections"])
     assert enqueue.call_args.kwargs["preferred_node_id"] == "node-a"
 

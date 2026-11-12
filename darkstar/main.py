@@ -31,6 +31,8 @@ from .scanners.portscan import RustScanner, run_rustscan, process_scan_results
 from .tools.bruteforce import process_bruteforce_results
 from .core.db_helper import register_cli_organization, get_allowed_scan_targets
 from .core.scan_scope import ScanScope, scan_scope_context, current_scan_scope
+from .core.asset_inventory import get_asset_scanner_rules
+from .core.scanner_targets import require_enabled_scanner
 from .core.utils import (
     categorize_targets,
     create_target_dataframe,
@@ -220,6 +222,7 @@ class worker:
             targets = load_targets_from_file(targets) if os.path.isfile(targets) else targets
             targets = [target.strip() for target in targets.split(",") if target.strip()]
         scope.require(targets)
+        require_enabled_scanner(targets, self.scanner, get_asset_scanner_rules(self.org_domain))
 
     async def run_port_scan(self, targets):
         self.require_approved_targets(targets)
@@ -524,7 +527,9 @@ class worker:
 
     async def run(self):
         scope = ScanScope([row["target"] for row in get_allowed_scan_targets(self.org_domain)])
-        scope.require([target.strip() for target in self.all_targets.split(",") if target.strip()])
+        targets = [target.strip() for target in self.all_targets.split(",") if target.strip()]
+        scope.require(targets)
+        require_enabled_scanner(targets, self.scanner, get_asset_scanner_rules(self.org_domain))
         with scan_scope_context(scope):
             return await self._run_scanners()
 

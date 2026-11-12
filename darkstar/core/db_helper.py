@@ -30,6 +30,26 @@ VALID_ROLES = {"platform_admin", "tenant_admin", "security_analyst", "viewer"}
 
 ORG_SCHEMA_STATEMENTS = [
     """
+    CREATE TABLE IF NOT EXISTS asset_inventory (
+        target VARCHAR(253) NOT NULL PRIMARY KEY,
+        addresses_json TEXT NOT NULL,
+        services_json LONGTEXT NOT NULL,
+        discovered_at DATETIME DEFAULT NULL,
+        last_attempt_at DATETIME NOT NULL,
+        source_node_id VARCHAR(64) NOT NULL,
+        error TEXT DEFAULT NULL,
+        last_scan_id INT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS asset_scanner_settings (
+        target VARCHAR(253) NOT NULL PRIMARY KEY,
+        scanners_json TEXT NOT NULL,
+        updated_by VARCHAR(255) NOT NULL,
+        updated_at DATETIME NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS allowed_scan_targets (
         target VARCHAR(253) NOT NULL PRIMARY KEY,
         approved_by VARCHAR(255) NOT NULL,
@@ -5981,13 +6001,13 @@ def extend_scanner_job_lease(job_id: int, node_id: str, lease_seconds: int = 900
             (lease_until, _utcnow(), job_id, node_id),
         )
         cursor.execute(
-            "SELECT id, org_db_name, scan_id, status FROM scanner_jobs WHERE id = %s AND locked_by_node_id = %s",
+            "SELECT * FROM scanner_jobs WHERE id = %s AND locked_by_node_id = %s",
             (job_id, node_id),
         )
         row = cursor.fetchone()
         connection.commit()
         cursor.close()
-    return row
+    return _decode_scanner_job(row)
 
 
 def request_scanner_job_stop(org_db_name: str, scan_id: int) -> None:
@@ -6048,13 +6068,15 @@ def complete_scanner_job(
         cursor = connection.cursor(dictionary=True)
         _ensure_organizations_registry(cursor)
         cursor.execute(
-            "SELECT * FROM scanner_jobs WHERE id = %s AND locked_by_node_id = %s",
+            "SELECT * FROM scanner_jobs WHERE id = %s AND locked_by_node_id = %s FOR UPDATE",
             (job_id, node_id),
         )
         job = cursor.fetchone()
         if not job:
             cursor.close()
             return None
+        if job["status"] == "stopping":
+            final_status = "stopped"
         cursor.execute(
             """
             UPDATE scanner_jobs
@@ -6072,6 +6094,7 @@ def complete_scanner_job(
 
     update_scan_status(job["org_db_name"], job["scan_id"], final_status, error_message=error_message)
     heartbeat_scanner_node(node_id, status="online")
+    job["status"] = final_status
     return _decode_scanner_job(job)
 
 

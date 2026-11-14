@@ -137,6 +137,23 @@ Configure the tunnel as a restarting service and the container with
 scanner host. Record the image digest and source commit for future updates:
 remote source copies do not automatically follow orchestrator deployments.
 
+Prepare source with `git clone --recurse-submodules` or run
+`git submodule update --init --recursive` in an existing checkout. A plain
+`git archive` omits submodule contents, including Asteroid. If deploying an
+archive, include the tracked Asteroid files at the submodule revision recorded
+by the same parent commit.
+
+After updating source, verify the scanner entry point inside the worker before
+accepting jobs:
+
+```bash
+docker exec darkstar-zap-worker python3 -m darkstar.main --help
+docker exec darkstar-zap-worker python3 -c 'from darkstar.scanners.asteroid_scanner import AsteroidScanner'
+```
+
+Use the actual container name for other workers. These checks do not start a
+scan. Restore the previous source if either check fails.
+
 Before enabling the worker, check for queued jobs it could immediately claim.
 Verify database access, online heartbeats, the ZAP-only catalog, native policy
 imports and restart recovery. These checks do not establish that a full scan

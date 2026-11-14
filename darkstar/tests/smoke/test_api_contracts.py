@@ -217,7 +217,7 @@ def test_start_scan_enqueues_worker_job_without_running_scanner(api_client, monk
     logs = []
 
     monkeypatch.setattr(webapp, "get_scan_history", lambda org_db, limit=100: [])
-    monkeypatch.setattr(webapp, "get_scanner_node_record", lambda node_id: {"node_id": node_id, "revoked_at": None})
+    monkeypatch.setattr(webapp, "get_scanner_node_record", lambda node_id: {"node_id": node_id, "revoked_at": None, "capabilities": ["*"]})
 
     def fake_create_scan_record(org_db, scan_name, scan_mode, targets):
         created.update({"org_db": org_db, "scan_name": scan_name, "scan_mode": scan_mode, "targets": targets})

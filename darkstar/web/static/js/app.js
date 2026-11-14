@@ -112,6 +112,8 @@ const state = {
     discoveryPollTimer: null,
     discoveryVersion: 0,
     scannerCatalogVersion: 0,
+    scanLaunchResults: [],
+    scanLaunchRecurring: false,
 };
 
 // ============================================================================
@@ -211,13 +213,6 @@ function dateInputToIso(elementId, endOfDay = false) {
     return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-function scannerApplianceLabel(node) {
-    if (!node) return "Auto";
-    const name = node.name || node.node_id || "scanner";
-    const status = node.status === "registered" && !node.last_seen_at ? "not connected" : node.status || "unknown";
-    return `${name} (${status}, ${node.running_jobs ?? 0} active jobs; capacity ${node.max_parallel_jobs ?? 1})`;
-}
-
 function scannerApplianceName(nodeId) {
     if (!nodeId) return "Auto";
     const node = state.scannerAppliances.find(item => item.node_id === nodeId);
@@ -244,97 +239,127 @@ function updateScanWorkerWarning() {
     warning.classList.toggle("hidden", hasActiveWorker);
 }
 
+function scannerName(scanner) {
+    return {
+        openvas: 'OpenVAS', zap: 'OWASP ZAP', nuclei: 'Nuclei',
+        nucleinetwork: 'Nuclei — network', wordpressnuclei: 'Nuclei — WordPress',
+        bbot_passive: 'BBOT — passive', bbot_normal: 'BBOT — normal',
+        bbot_aggressive: 'BBOT — aggressive', bbot_attack_surface: 'BBOT — attack surface',
+        rustscan: 'RustScan', nikto: 'Nikto', wapiti: 'Wapiti', dalfox: 'Dalfox',
+        testssl: 'testssl.sh', asteroid_normal: 'Asteroid — normal',
+        asteroid_aggressive: 'Asteroid — aggressive', retirejs: 'RetireJS', vulnscan: 'Vulnscan',
+    }[scanner] || scanner;
+}
+
 async function loadScannerApplianceOptions() {
-    const select = document.getElementById("applianceInput");
-    if (!select || !state.authenticated || !canManageScans() || state.tenantSwitchPending) return;
-    const currentValue = select.value;
+    const container = document.getElementById('scannerApplianceChoices');
+    if (!state.authenticated || !canManageScans() || state.tenantSwitchPending) return;
+    const version = ++state.scannerCatalogVersion;
     const sessionVersion = state.sessionVersion;
     try {
-        const result = await requestJson("/api/scanner-nodes/available");
-        if (sessionVersion !== state.sessionVersion || !canManageScans()) return;
-        state.scannerAppliances = result.items || [];
-        select.innerHTML = [
-            '<option value="">Auto - any available appliance</option>',
-            ...state.scannerAppliances.map(node => `
-                <option value="${escapeHtml(node.node_id)}" ${node.status === 'registered' && !node.last_seen_at ? 'disabled' : ''}>${escapeHtml(scannerApplianceLabel(node))}</option>
-            `),
-        ].join("");
-        const activeNodes = state.scannerAppliances.filter(scannerNodeIsActive);
-        if (currentValue && state.scannerAppliances.some(node => node.node_id === currentValue && !(node.status === 'registered' && !node.last_seen_at))) {
-            select.value = currentValue;
-        } else if (activeNodes.length === 1) {
-            select.value = activeNodes[0].node_id;
+        const result = await requestJson('/api/scanner-nodes/available');
+        if (sessionVersion !== state.sessionVersion || version !== state.scannerCatalogVersion || !canManageScans()) return;
+        state.scannerAppliances = (result.items || []).sort((first, second) =>
+            Number(scannerNodeIsActive(second)) - Number(scannerNodeIsActive(first)) ||
+            (first.name || first.node_id).localeCompare(second.name || second.node_id));
+        if (container.dataset.orgDb !== state.orgDb) container.replaceChildren();
+        container.dataset.orgDb = state.orgDb;
+        const existing = new Map([...container.querySelectorAll('.scanner-appliance-card')].map(card => [card.dataset.nodeId, card]));
+        container.querySelectorAll(':scope > .field-hint').forEach(item => item.remove());
+        for (const node of state.scannerAppliances) {
+            const active = scannerNodeIsActive(node);
+            let card = existing.get(node.node_id);
+            if (!card) {
+                card = document.createElement('fieldset');
+                card.className = 'scanner-appliance-card';
+                card.dataset.nodeId = node.node_id;
+                card.innerHTML = `
+                    <label class="scanner-appliance-heading"><input class="scan-appliance-choice" type="checkbox" value="${escapeHtml(node.node_id)}"><strong class="scanner-appliance-name"></strong></label>
+                    <span class="field-hint scanner-appliance-status"></span>
+                    <p class="field-hint scanner-appliance-engines"></p>
+                    <div class="scanner-engine-list hidden"></div>`;
+                const checkbox = card.querySelector('.scan-appliance-choice');
+                checkbox.addEventListener('change', () => {
+                    card.classList.toggle('selected', checkbox.checked);
+                    card.querySelector('.scanner-engine-list').classList.toggle('hidden', !checkbox.checked);
+                    if (checkbox.checked) loadScannerProfiles(card);
+                    updateScanLaunchSummary();
+                });
+            }
+            existing.delete(node.node_id);
+            card.querySelector('.scanner-appliance-name').textContent = node.name || node.node_id;
+            card.querySelector('.scanner-appliance-status').textContent = active
+                ? `${node.status === 'busy' ? 'Busy' : 'Online'} · ${node.running_jobs ?? 0} active jobs · capacity ${node.max_parallel_jobs ?? 1}`
+                : 'Not connected — start its worker to use this appliance.';
+            const checkbox = card.querySelector('.scan-appliance-choice');
+            checkbox.disabled = !active;
+            if (!active) {
+                checkbox.checked = false;
+                card.classList.remove('selected');
+                card.querySelector('.scanner-engine-list').classList.add('hidden');
+                card.querySelector('.scanner-appliance-engines').textContent = '';
+            }
+            container.appendChild(card);
+            if (active) loadScannerProfiles(card);
         }
+        existing.forEach(card => card.remove());
+        if (!state.scannerAppliances.length) container.innerHTML = '<p class="field-hint">No scanner appliances are available for this organization. Add a connected appliance in Settings.</p>';
     } catch (error) {
-        if (sessionVersion !== state.sessionVersion) return;
-        console.warn("Failed to load scanner appliances:", error);
-        select.innerHTML = '<option value="">Auto - any available appliance</option>';
+        if (sessionVersion !== state.sessionVersion || version !== state.scannerCatalogVersion) return;
+        container.textContent = error.message;
         state.scannerAppliances = [];
     }
     updateScanWorkerWarning();
-    await loadScannerProfiles();
+    updateScanLaunchSummary();
 }
 
-function selectedScanners() {
-    return [...document.querySelectorAll('#scannerSelections input[type="checkbox"]:checked')].map(checkbox => ({
-        scanner: checkbox.value,
-        profile_id: checkbox.closest('fieldset').querySelector('select').value,
+function selectedAppliances() {
+    return [...document.querySelectorAll('.scan-appliance-choice:checked:not(:disabled)')].map(checkbox => ({
+        node_id: checkbox.value,
+        selections: [...checkbox.closest('.scanner-appliance-card').querySelectorAll('.scanner-choice:checked')].map(input => ({
+            scanner: input.value,
+            profile_id: input.closest('.scanner-engine').querySelector('select').value,
+        })),
     }));
 }
 
-function clearScannerSelections() {
-    document.querySelectorAll('#scannerSelections input[type="checkbox"]').forEach(input => {
-        input.checked = false;
-        input.closest('fieldset').querySelector('.profile-controls').classList.add('hidden');
-    });
-}
-
-function selectInstalledScanner(scanner) {
-    if (!scanner) return;
-    const checkbox = document.querySelector(`#scannerSelections input[value="${CSS.escape(scanner)}"]`);
-    if (!checkbox) return;
-    checkbox.checked = true;
-    checkbox.dispatchEvent(new Event('change'));
-    checkbox.closest('fieldset').scrollIntoView({block: 'nearest'});
-}
-
-async function loadScannerProfiles() {
-    const container = document.getElementById('scannerSelections');
-    const nodeId = document.getElementById('applianceInput').value;
-    if (container.dataset.nodeId === nodeId && container.dataset.orgDb === state.orgDb &&
-        (container.dataset.loading === 'true' || container.querySelector('fieldset'))) return;
-    const version = ++state.scannerCatalogVersion;
-    container.dataset.nodeId = nodeId;
-    container.dataset.orgDb = state.orgDb;
-    container.dataset.loading = 'false';
-    container.textContent = nodeId ? 'Loading installed profiles…' : 'Choose an appliance first.';
-    if (!nodeId) return;
+async function loadScannerProfiles(card) {
+    const container = card.querySelector('.scanner-engine-list');
+    if (container.dataset.loaded || container.dataset.loading) return;
+    const nodeId = card.dataset.nodeId;
     const orgDb = state.orgDb;
+    const sessionVersion = state.sessionVersion;
+    const current = () => card.isConnected && state.orgDb === orgDb && sessionVersion === state.sessionVersion;
     container.dataset.loading = 'true';
+    container.textContent = 'Loading installed profiles…';
+    card.querySelector('.scanner-appliance-engines').textContent = 'Loading scanners…';
     try {
         const catalog = await requestJson(`/api/scanner-nodes/${encodeURIComponent(nodeId)}/profiles?limit=1`);
-        if (version !== state.scannerCatalogVersion || state.orgDb !== orgDb) return;
-        container.innerHTML = '';
+        if (!current()) return;
+        container.replaceChildren();
+        card.querySelector('.scanner-appliance-engines').textContent = catalog.scanners.map(scannerName).join(' · ');
         if (!catalog.scanners.length) {
-            container.textContent = 'This appliance has not reported any installed profiles yet. Check that its worker is connected, then reopen Scan Center to retry.';
+            container.textContent = 'No installed profiles have been reported. Check this appliance’s worker, then reopen Scan Center to retry.';
+            card.querySelector('.scanner-appliance-engines').textContent = 'No installed profiles reported';
             return;
         }
+        container.dataset.loaded = 'true';
         catalog.scanners.forEach(scanner => {
-            const label = scanner === "zap" ? "OWASP ZAP" : document.querySelector(`#scannerInput option[value="${CSS.escape(scanner)}"]`)?.textContent || scanner;
+            const label = scannerName(scanner);
             const fieldset = document.createElement('fieldset');
-            fieldset.className = 'form-group';
+            fieldset.className = 'scanner-engine form-group';
             fieldset.innerHTML = `
-                <label><input type="checkbox" value="${escapeHtml(scanner)}"> ${escapeHtml(label)}</label>
+                <label class="scanner-engine-heading"><input class="scanner-choice" type="checkbox" value="${escapeHtml(scanner)}"> ${escapeHtml(label)}</label>
                 <div class="profile-controls hidden">
-                    <label>Search ${escapeHtml(label)} profiles <input type="search" placeholder="Profile name or template path"></label>
+                    <label class="profile-search hidden">Search profiles <input type="search" placeholder="Profile name or template path"></label>
                     <label>${scanner === 'openvas' ? 'OpenVAS policy' : 'Profile'} <select class="filter-select"><option value="">Choose a profile</option></select></label>
-                    <div><button type="button" class="btn-secondary btn-sm profile-previous">Previous</button>
+                    <div class="profile-pagination hidden"><button type="button" class="btn-secondary btn-sm profile-previous">Previous</button>
                     <span class="field-hint profile-count"></span>
                     <button type="button" class="btn-secondary btn-sm profile-next">Next</button></div>
                     <p class="form-message profile-error" role="status"></p>
                 </div>`;
             container.appendChild(fieldset);
-            const checkbox = fieldset.querySelector('[type="checkbox"]');
+            const checkbox = fieldset.querySelector('.scanner-choice');
             const search = fieldset.querySelector('[type="search"]');
             const select = fieldset.querySelector('select');
             let offset = 0;
@@ -345,7 +370,7 @@ async function loadScannerProfiles() {
                 const params = new URLSearchParams({scanner, search: search.value, offset, limit: 100});
                 try {
                     const result = await requestJson(`/api/scanner-nodes/${encodeURIComponent(nodeId)}/profiles?${params}`);
-                    if (number !== requestNumber || !fieldset.isConnected || container.dataset.nodeId !== nodeId || state.orgDb !== orgDb) return;
+                    if (number !== requestNumber || !fieldset.isConnected || !current()) return;
                     const selected = select.selectedOptions[0];
                     const retained = selected?.value && !result.items.some(item => item.id === selected.value) ? selected.cloneNode(true) : null;
                     const value = select.value;
@@ -353,22 +378,23 @@ async function loadScannerProfiles() {
                     if (retained) select.appendChild(retained);
                     result.items.forEach(item => select.add(new Option(item.name, item.id)));
                     select.value = value;
+                    fieldset.querySelector('.profile-search').classList.toggle('hidden', result.total <= 100 && !search.value);
+                    fieldset.querySelector('.profile-pagination').classList.toggle('hidden', result.total <= 100 && offset === 0);
                     fieldset.querySelector('.profile-count').textContent = `${result.total ? offset + 1 : 0}–${Math.min(offset + 100, result.total)} of ${result.total}`;
                     fieldset.querySelector('.profile-previous').disabled = offset === 0;
                     fieldset.querySelector('.profile-next').disabled = offset + 100 >= result.total;
-                    fieldset.querySelector('.profile-error').textContent = '';
+                    fieldset.querySelector('.profile-error').textContent = result.total ? '' : 'No matching profiles.';
+                    updateScanLaunchSummary();
                 } catch (error) {
-                    if (number === requestNumber && fieldset.isConnected) fieldset.querySelector('.profile-error').textContent = error.message;
+                    if (number === requestNumber && current()) fieldset.querySelector('.profile-error').textContent = error.message;
                 }
             }
             checkbox.addEventListener('change', () => {
                 fieldset.querySelector('.profile-controls').classList.toggle('hidden', !checkbox.checked);
-                if (checkbox.checked) {
-                    document.getElementById('modeInput').value = '';
-                    document.getElementById('scannerInput').value = '';
-                    loadPage();
-                }
+                if (checkbox.checked) loadPage();
+                updateScanLaunchSummary();
             });
+            select.addEventListener('change', updateScanLaunchSummary);
             search.addEventListener('input', () => {
                 clearTimeout(timer);
                 ++requestNumber;
@@ -377,15 +403,54 @@ async function loadScannerProfiles() {
             fieldset.querySelector('.profile-previous').addEventListener('click', () => { offset = Math.max(0, offset - 100); loadPage(); });
             fieldset.querySelector('.profile-next').addEventListener('click', () => { offset += 100; loadPage(); });
         });
-        selectInstalledScanner(document.getElementById('scannerInput').value);
     } catch (error) {
-        if (version === state.scannerCatalogVersion && state.orgDb === orgDb) {
+        if (current()) {
             container.textContent = error.message;
-            delete container.dataset.nodeId;
+            card.querySelector('.scanner-appliance-engines').textContent = 'Profiles unavailable';
         }
     } finally {
-        if (version === state.scannerCatalogVersion) container.dataset.loading = 'false';
+        delete container.dataset.loading;
     }
+}
+
+function updateScanLaunchSummary() {
+    const appliances = selectedAppliances();
+    const recurring = document.getElementById('recurringScanInput').checked;
+    const count = scanTargetValues().length;
+    document.getElementById('scanLaunchSummaryText').textContent = `${count} target${count === 1 ? '' : 's'} · ${appliances.length} appliance${appliances.length === 1 ? '' : 's'} · ${recurring ? 'Recurring' : 'Run now'}`;
+    document.getElementById('scanLaunchPlan').innerHTML = appliances.map(appliance => {
+        const card = [...document.querySelectorAll('.scanner-appliance-card')].find(item => item.dataset.nodeId === appliance.node_id);
+        const profiles = [...card.querySelectorAll('.scanner-choice:checked')].map(input => {
+            const select = input.closest('.scanner-engine').querySelector('select');
+            return `${scannerName(input.value)} / ${select.value ? select.selectedOptions[0].textContent : 'Choose a profile'}`;
+        });
+        return `<li><strong>${escapeHtml(scannerApplianceName(appliance.node_id))}</strong><span>${escapeHtml(profiles.join('; ') || 'Choose at least one scanner')}</span></li>`;
+    }).join('');
+    document.getElementById('launchScanBtn').textContent = recurring ? 'Create schedules' : 'Launch scan';
+}
+
+function renderScanLaunchResults(scans = []) {
+    const container = document.getElementById('scanLaunchResults');
+    if (!state.scanLaunchResults.length) {
+        container.replaceChildren();
+        return;
+    }
+    state.scanLaunchResults.forEach(item => {
+        const scan = scans.find(scan => String(scan.id) === String(item.scan_id));
+        if (scan) item.status = scan.status;
+    });
+    const rows = state.scanLaunchResults.map(item => {
+        let actions = '<span>Scheduled</span>';
+        if (!state.scanLaunchRecurring) {
+            actions = `${statusBadge(item.status)}<button type="button" class="btn-secondary btn-sm open-debug-scan-btn" data-scan-id="${escapeHtml(item.scan_id)}">View logs</button>`;
+            if (['running', 'queued', 'stopping'].includes(item.status)) {
+                actions += `<button type="button" class="btn-danger btn-sm stop-scan-btn" data-scan-id="${escapeHtml(item.scan_id)}">Stop</button>`;
+            }
+        }
+        return `<li><span><strong>${escapeHtml(item.node_name || scannerApplianceName(item.node_id))}</strong> · ${escapeHtml(item.scan_name || 'Scan')}
+            <small class="field-hint">${state.scanLaunchRecurring ? 'Schedule' : 'Run'} #${escapeHtml(item.schedule_id || item.scan_id)}</small></span>${actions}</li>`;
+    });
+    container.innerHTML = `<ul class="scan-launch-results">${rows.join('')}</ul>`;
 }
 
 function formatIntervalMinutes(minutes) {
@@ -1650,6 +1715,7 @@ function renderSeverityList(breakdown) {
 }
 
 function renderActiveScans(items) {
+    renderScanLaunchResults(items);
     const container = document.getElementById("activeScansList");
     if (!container) return;
     const active = items.filter(s => s.status === "running" || s.status === "queued");
@@ -2668,7 +2734,8 @@ function scanTargetValues() {
 function updateScanTargetSelection() {
     const selected = new Set(scanTargetValues());
     document.querySelectorAll('.scan-asset-choice').forEach(input => { input.checked = selected.has(input.value); });
-    document.getElementById('scanTargetCount').textContent = `${selected.size} targets`;
+    document.getElementById('scanTargetCount').textContent = `${selected.size} target${selected.size === 1 ? '' : 's'}`;
+    updateScanLaunchSummary();
 }
 
 function renderScanAssetChoices() {
@@ -2979,6 +3046,13 @@ document.getElementById('targetsInput').addEventListener('input', updateScanTarg
 
 function invalidateScanScope() {
     invalidateApprovedAssets();
+    state.scannerCatalogVersion += 1;
+    state.scannerAppliances = [];
+    document.getElementById('scannerApplianceChoices').replaceChildren();
+    state.scanLaunchResults = [];
+    renderScanLaunchResults();
+    document.getElementById('scanMessage').textContent = '';
+    document.getElementById('scanNameInput').value = '';
     document.getElementById("targetsInput").value = "";
     updateScanTargetSelection();
     state.scanScopeVersion += 1;
@@ -3652,107 +3726,66 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
 });
 
 // Scan form
-document.getElementById("scanForm").addEventListener("submit", async (event) => {
+document.getElementById('scanForm').addEventListener('submit', async (event) => {
     event.preventDefault();
     if (!canManageScans() || state.tenantSwitchPending) return;
-    const scanMessage = document.getElementById("scanMessage");
-    scanMessage.textContent = "";
-
-    const targets = document.getElementById("targetsInput").value.trim();
-    const mode = document.getElementById("modeInput").value;
-    const scanner = document.getElementById("scannerInput").value;
-    const preferredNodeId = document.getElementById("applianceInput")?.value || null;
-    const scanName = document.getElementById("scanNameInput").value.trim();
-    const bruteforce = document.getElementById("bruteforceInput").checked;
-    const recurring = document.getElementById("recurringScanInput").checked;
-    const selections = selectedScanners();
-    if (scanner === 'openvas') {
-        scanMessage.textContent = "Choose an appliance and an installed OpenVAS policy below.";
+    const scanMessage = document.getElementById('scanMessage');
+    const button = document.getElementById('launchScanBtn');
+    if (button.disabled) return;
+    scanMessage.textContent = '';
+    const appliances = selectedAppliances();
+    if (!appliances.length) {
+        scanMessage.textContent = 'Select at least one connected appliance.';
         return;
     }
-    if (selections.some(item => !item.profile_id)) {
-        scanMessage.textContent = "Choose a profile for each selected scanner.";
+    if (appliances.some(item => !item.selections.length)) {
+        scanMessage.textContent = 'Choose at least one scanner on each selected appliance.';
         return;
     }
-
-    if (!mode && !scanner && !selections.length) {
-        scanMessage.textContent = "Select a scan mode, an individual scanner, or scanners with profiles.";
+    if (appliances.some(item => item.selections.some(selection => !selection.profile_id))) {
+        scanMessage.textContent = 'Choose a profile for each selected scanner.';
         return;
     }
-
-    if (mode && scanner) {
-        scanMessage.textContent = "Choose mode OR scanner, not both.";
-        return;
-    }
-
+    const recurring = document.getElementById('recurringScanInput').checked;
+    const sessionVersion = state.sessionVersion;
+    const payload = {
+        targets: document.getElementById('targetsInput').value.trim(),
+        appliances,
+        scan_name: document.getElementById('scanNameInput').value.trim() || null,
+        bruteforce: document.getElementById('bruteforceInput').checked,
+        bruteforce_timeout: 300,
+    };
+    if (recurring) Object.assign(payload, {
+        interval_minutes: scheduleIntervalMinutes(),
+        start_at: dateInputToIso('scheduleStartInput'),
+        end_at: dateInputToIso('scheduleEndInput', true),
+    });
+    button.disabled = true;
     try {
-        if (recurring) {
-            await requestJson("/api/schedules", {
-                method: "POST",
-                body: JSON.stringify({
-                    targets,
-                    mode: mode ? Number(mode) : null,
-                    scanner: scanner || null,
-                    ...(selections.length ? {selections} : {}),
-                    preferred_node_id: preferredNodeId,
-                    scan_name: scanName || null,
-                    bruteforce,
-                    bruteforce_timeout: 300,
-                    interval_minutes: scheduleIntervalMinutes(),
-                    start_at: dateInputToIso("scheduleStartInput"),
-                    end_at: dateInputToIso("scheduleEndInput", true),
-                }),
-            });
-            scanMessage.textContent = "Recurring scan created.";
-            await loadSchedulesView();
-            await refreshDashboard();
-            return;
-        }
-        const result = await requestJson("/api/scans/start", {
-            method: "POST",
-            body: JSON.stringify({
-                targets,
-                mode: mode ? Number(mode) : null,
-                scanner: scanner || null,
-                ...(selections.length ? {selections} : {}),
-                preferred_node_id: preferredNodeId,
-                scan_name: scanName || null,
-                bruteforce,
-                bruteforce_timeout: 300,
-            }),
+        const result = await requestJson(recurring ? '/api/schedules' : '/api/scans/start', {
+            method: 'POST', body: JSON.stringify(payload),
         });
-        scanMessage.textContent = "Scan queued successfully. Check Debug Panel for live output.";
-        // Switch to debug tab and wait for its scan list to populate, then select
-        // the new scan so the select reflects the correct entry.
-        await switchTab("debug");
-        document.getElementById("debugScanSelect").value = String(result.scan_id);
-        await loadScanLogs(result.scan_id);
+        if (sessionVersion !== state.sessionVersion) return;
+        state.scanLaunchRecurring = recurring;
+        state.scanLaunchResults = recurring ? result.schedules : result.scans;
+        const count = state.scanLaunchResults.length;
+        scanMessage.textContent = recurring
+            ? `${count} recurring schedule${count === 1 ? '' : 's'} created. Each appliance has its own schedule.`
+            : `${count} scan run${count === 1 ? '' : 's'} queued. Each appliance has its own status and logs below.`;
+        renderScanLaunchResults();
+        if (recurring) await loadSchedulesView();
         await refreshDashboard();
+        document.getElementById('scanLaunchResults').scrollIntoView({block: 'nearest'});
     } catch (error) {
-        scanMessage.textContent = error.message;
+        if (sessionVersion === state.sessionVersion) scanMessage.textContent = error.message;
+    } finally {
+        button.disabled = false;
     }
 });
 
-document.getElementById("applianceInput").addEventListener("change", loadScannerProfiles);
-
-// Mode, individual scanner, and profile selections are mutually exclusive.
-document.getElementById("modeInput").addEventListener("change", (e) => {
-    if (e.target.value) {
-        clearScannerSelections();
-        document.getElementById("scannerInput").value = "";
-    }
-});
-
-document.getElementById("scannerInput").addEventListener("change", (e) => {
-    if (e.target.value) {
-        clearScannerSelections();
-        document.getElementById("modeInput").value = "";
-        selectInstalledScanner(e.target.value);
-    }
-});
-
-document.getElementById("recurringScanInput").addEventListener("change", (event) => {
-    document.getElementById("recurringOptions").classList.toggle("hidden", !event.target.checked);
+document.getElementById('recurringScanInput').addEventListener('change', (event) => {
+    document.getElementById('recurringOptions').classList.toggle('hidden', !event.target.checked);
+    updateScanLaunchSummary();
 });
 
 document.getElementById("endpointNetworkMapCanvas").addEventListener("click", (event) => {

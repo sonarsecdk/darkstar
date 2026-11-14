@@ -79,7 +79,9 @@ from .core.db_helper import (
     create_or_update_user,
     create_organization,
     create_scan_record,
+    create_scan_batch,
     create_scan_schedule,
+    create_scan_schedule_batch,
     delete_user,
     delete_organization,
     delete_endpoint_agent,
@@ -532,12 +534,18 @@ class ScannerSelection(BaseModel):
     profile_id: str = Field(min_length=1, max_length=1024)
 
 
+class ApplianceSelection(BaseModel):
+    node_id: str = Field(min_length=1, max_length=64)
+    selections: list[ScannerSelection] = Field(min_length=1, max_length=30)
+
+
 class ScanStartRequest(BaseModel):
     targets: str = Field(min_length=1)
     mode: int | None = Field(default=None)
     scanner: str | None = Field(default=None)
     selections: list[ScannerSelection] = Field(default_factory=list, max_length=30)
     preferred_node_id: str | None = Field(default=None, max_length=64)
+    appliances: list[ApplianceSelection] = Field(default_factory=list, max_length=16)
     scan_name: str | None = Field(default=None, max_length=255)
     bruteforce: bool = False
     bruteforce_timeout: int = Field(default=300, ge=10, le=3600)
@@ -1132,6 +1140,10 @@ def _validate_scan_payload(body: ScanStartRequest):
         if not node or node.get("revoked_at"):
             raise HTTPException(status_code=400, detail="Selected scanner appliance is not available")
         capabilities = set(node.get("capabilities") or [])
+        if body.scanner and not capabilities.intersection({"*", "all", body.scanner, "scanner:" + body.scanner}):
+            raise HTTPException(status_code=400, detail=f"Appliance does not support {body.scanner}")
+        if body.mode is not None and not capabilities.intersection({"*", "all", str(body.mode), "mode:" + str(body.mode)}):
+            raise HTTPException(status_code=400, detail="Appliance does not support this workflow")
         catalog = {(item["scanner"], item["id"]): item for item in get_scanner_profiles(body.preferred_node_id)["items"]} if body.selections else {}
         for selection in body.selections:
             if not capabilities.intersection({"*", "all", selection.scanner, "scanner:" + selection.scanner}):
@@ -1398,7 +1410,7 @@ def _queue_scan(org_db: str, body: ScanStartRequest, schedule_id: int | None = N
             scan_mode=scan_kind,
             targets=targets,
         )
-        payload = body.dict()
+        payload = body.dict(exclude={"appliances"})
         if body.selections:
             payload["selections"] = [dict(item.dict(), profile_name=catalog[(item.scanner, item.profile_id)]["name"],
                                           targets=routes[item.scanner]) for item in body.selections]
@@ -1442,6 +1454,43 @@ def _queue_scan(org_db: str, body: ScanStartRequest, schedule_id: int | None = N
             cursor.close()
 
     return scan_id
+
+
+def _prepare_appliance_scans(org_db: str, body: ScanStartRequest, *, check_conflicts: bool = True) -> list[dict]:
+    """Validate every appliance before any part of a multi-appliance request starts."""
+    if body.mode is not None or body.scanner or body.selections or body.preferred_node_id:
+        raise HTTPException(status_code=400, detail="Choose appliance profiles without mixing legacy scan options")
+    node_ids = [item.node_id for item in body.appliances]
+    if len(node_ids) != len(set(node_ids)):
+        raise HTTPException(status_code=400, detail="Choose each appliance once")
+    targets = _normalize_scan_targets(body.targets)
+    _require_scan_scope(org_db, targets)
+    plans = []
+    for appliance in body.appliances:
+        node = get_scanner_node_record(appliance.node_id)
+        if not node or node.get("revoked_at"):
+            raise HTTPException(status_code=400, detail="Selected scanner appliance is not available")
+        node_name = node.get("name") or appliance.node_id
+        if not _node_is_online(node):
+            raise HTTPException(status_code=400, detail=f"Appliance {node_name} is offline. Refresh the appliance list.")
+        scan_name = f"{node_name}: {body.scan_name or ' + '.join(item.scanner for item in appliance.selections)}"[:255]
+        child = ScanStartRequest(targets=targets, selections=appliance.selections,
+                                 preferred_node_id=appliance.node_id, scan_name=scan_name,
+                                 bruteforce=body.bruteforce, bruteforce_timeout=body.bruteforce_timeout)
+        catalog = _validate_scan_payload(child)
+        routes = _scan_target_routes(org_db, child)
+        if check_conflicts:
+            conflict = _active_scan_conflict(org_db, child)
+            if conflict:
+                raise HTTPException(status_code=409, detail=f"An identical scan is already active on {node_name} (scan {conflict['id']})")
+        selections = [dict(item.dict(), profile_name=catalog[(item.scanner, item.profile_id)]["name"],
+                           targets=routes[item.scanner]) for item in child.selections]
+        payload = child.dict(exclude={"appliances"})
+        payload["selections"] = selections
+        plans.append({"node_id": appliance.node_id, "node_name": node_name, "scan_name": scan_name,
+                      "targets": targets, "scan_mode": "selection", "scanner": selections[0]["scanner"],
+                      "payload": payload, "components": selections})
+    return plans
 
 
 def _severity_reaches_threshold(severity_breakdown: dict, min_severity: str) -> bool:
@@ -2836,6 +2885,17 @@ def stats(request: Request, include_accepted: bool = False):
 def start_scan(request: Request, body: ScanStartRequest):
     _require_min_role(request, "tenant_admin")
     org_db = _get_org_db(request)
+    if body.appliances:
+        plans = _prepare_appliance_scans(org_db, body)
+        try:
+            scans = create_scan_batch(org_db, plans, expected_org_id=request.state.authenticated_org_id)
+        except OrganizationConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ScanScopeError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "status": "queued", "scans": scans, "scan_ids": [scan["scan_id"] for scan in scans]}
     scan_id = _queue_scan(org_db, body)
     return {"ok": True, "scan_id": scan_id, "status": "queued"}
 
@@ -3023,6 +3083,20 @@ def schedules(request: Request):
 def create_schedule(request: Request, body: ScheduleRequest):
     _require_min_role(request, "tenant_admin")
     org_db = _get_org_db(request)
+    if body.appliances:
+        plans = _prepare_appliance_scans(org_db, body, check_conflicts=False)
+        settings = body.dict(include={"interval_minutes", "start_at", "end_at", "bruteforce", "bruteforce_timeout"})
+        try:
+            schedules = create_scan_schedule_batch(
+                org_db, plans, settings, expected_org_id=request.state.authenticated_org_id,
+            )
+        except OrganizationConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ScanScopeError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"ok": True, "schedules": schedules, "schedule_ids": [item["schedule_id"] for item in schedules]}
     _validate_scan_payload(body)
     _require_scan_scope(org_db, body.targets)
     _scan_target_routes(org_db, body)

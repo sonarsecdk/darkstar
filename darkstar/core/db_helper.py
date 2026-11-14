@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 
 from .models.vulnerability import Vulnerability
 from .scan_scope import ScanScope, normalize_scope_entry
+from .scanner_targets import require_enabled_scanner
 
 logger = logging.getLogger(__name__)
 
@@ -1483,6 +1484,122 @@ def create_scan_record(org_name: str, scan_name: str, scan_mode: str | None, tar
         connection.commit()
         cursor.close()
         return int(scan_id)
+
+
+def _scan_batch_signature(node_id, scan_mode, targets, selections):
+    """Match the existing duplicate check, including appliance and profiles."""
+    targets = tuple(sorted({target.strip().lower().rstrip("/")
+                            for target in re.split(r"[,\r\n]+", targets) if target.strip()}))
+    profiles = frozenset((item["scanner"], item["profile_id"]) for item in selections)
+    return node_id, scan_mode, targets, profiles
+
+
+def _validate_scan_batch(cursor, org_name, plans, expected_org_id, queue_table=None):
+    """Recheck prepared plans while holding tenant and appliance locks."""
+    org_db = normalize_org_name(org_name)
+    organization = _lock_organization(cursor, org_db)
+    if not organization or organization["id"] != expected_org_id:
+        raise OrganizationConflictError("Organization is no longer available")
+    node_ids = [plan["node_id"] for plan in plans]
+    if not node_ids or len(node_ids) != len(set(node_ids)):
+        raise ValueError("Choose each scanner appliance once")
+
+    # Consistent ordering avoids deadlocks when two tenants select the same nodes.
+    nodes = {}
+    for node_id in sorted(node_ids):
+        cursor.execute(
+            "SELECT capabilities, revoked_at FROM scanner_nodes WHERE node_id = %s FOR UPDATE",
+            (node_id,),
+        )
+        node = cursor.fetchone()
+        if not node or node["revoked_at"]:
+            raise ValueError("Selected scanner appliance is not available")
+        nodes[node_id] = set(_normalize_capabilities(node["capabilities"]))
+
+    _use_org_database(cursor, org_db)
+    cursor.execute("SELECT target FROM allowed_scan_targets")
+    scope = ScanScope([row["target"] for row in cursor.fetchall()])
+    cursor.execute("SELECT target, scanners_json FROM asset_scanner_settings")
+    rules = [{"target": row["target"], "enabled_scanners": json.loads(row["scanners_json"])}
+             for row in cursor.fetchall() if row["target"] in scope.entries or scope.allows(row["target"])]
+    signatures = set()
+    for plan in plans:
+        selections = plan["payload"]["selections"]
+        scanners = [item["scanner"] for item in selections]
+        if not scanners or len(scanners) != len(set(scanners)):
+            raise ValueError("Choose one profile per scanner on each appliance")
+        original = [target.strip() for target in re.split(r"[,\r\n]+", plan["targets"]) if target.strip()]
+        scope.require(original)
+        for selection in selections:
+            scanner = selection["scanner"]
+            if not nodes[plan["node_id"]].intersection({"*", "all", scanner, "scanner:" + scanner}):
+                raise ValueError(f"Appliance does not support {scanner}")
+            resolved = [target.strip() for target in re.split(r"[,\r\n]+", selection.get("targets") or plan["targets"])
+                        if target.strip()]
+            scope.require(resolved)
+            require_enabled_scanner(original, scanner, rules)
+            require_enabled_scanner(resolved, scanner, rules)
+        signatures.add(_scan_batch_signature(plan["node_id"], plan["scan_mode"], plan["targets"], selections))
+
+    if queue_table:
+        cursor.execute(
+            f"""SELECT scans.id, scans.scan_mode, scans.targets, jobs.preferred_node_id, jobs.payload_json
+                FROM scans JOIN {queue_table} jobs ON jobs.org_db_name = %s AND jobs.scan_id = scans.id
+                WHERE scans.status IN ('queued', 'running', 'stopping')""",
+            (org_db,),
+        )
+        for row in cursor.fetchall():
+            selections = json.loads(row["payload_json"]).get("selections") or []
+            if _scan_batch_signature(row["preferred_node_id"], row["scan_mode"], row["targets"], selections) in signatures:
+                raise OrganizationConflictError(f"An identical scan is already queued or running (scan {row['id']})")
+
+
+def create_scan_batch(org_name: str, plans: list[dict], *, expected_org_id: int) -> list[dict]:
+    """Queue one scan per appliance atomically, preserving individual job lifecycles."""
+    org_db = normalize_org_name(org_name)
+    now = datetime.utcnow()
+    results = []
+    with DatabaseConnectionManager() as connection:
+        cursor = connection.cursor(dictionary=True)
+        try:
+            # Registry migrations can commit implicitly, so run them before any writes.
+            _ensure_organizations_registry(cursor)
+            queue_table = f"`{connection.database.replace('`', '``')}`.scanner_jobs"
+            _validate_scan_batch(cursor, org_db, plans, expected_org_id, queue_table)
+            for plan in plans:
+                cursor.execute(
+                    """INSERT INTO scans (scan_name, scan_mode, targets, status, created_at)
+                       VALUES (%s, %s, %s, 'queued', %s)""",
+                    (plan["scan_name"], plan["scan_mode"], plan["targets"], now),
+                )
+                scan_id = int(cursor.lastrowid)
+                cursor.executemany(
+                    "INSERT INTO scan_components (scan_id, scanner, profile_id, profile_name) VALUES (%s, %s, %s, %s)",
+                    [(scan_id, item["scanner"], item["profile_id"], item["profile_name"])
+                     for item in plan["components"]],
+                )
+                payload = dict(plan["payload"], preferred_node_id=plan["node_id"])
+                cursor.execute(
+                    f"""INSERT INTO {queue_table}
+                        (org_db_name, scan_id, scan_name, scan_mode, scanner, preferred_node_id,
+                         targets, payload_json, status, priority, created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'queued', 100, %s, %s)""",
+                    (org_db, scan_id, plan["scan_name"], plan["scan_mode"], plan["scanner"], plan["node_id"],
+                     plan["targets"], json.dumps(payload), now, now),
+                )
+                cursor.execute(
+                    "INSERT INTO scan_logs (scan_id, log_level, message, created_at) VALUES (%s, 'info', %s, %s)",
+                    (scan_id, f"Queued for selected scanner appliance {plan['node_id']}", now),
+                )
+                results.append({"scan_id": scan_id, "node_id": plan["node_id"], "node_name": plan["node_name"],
+                                "scan_name": plan["scan_name"], "status": "queued"})
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+    return results
 
 
 def update_scan_status(org_name: str, scan_id: int, status: str, error_message: str | None = None):
@@ -3568,6 +3685,47 @@ def create_scan_schedule(
         connection.commit()
         cursor.close()
         return int(schedule_id)
+
+
+def create_scan_schedule_batch(
+    org_name: str, plans: list[dict], settings: dict, *, expected_org_id: int,
+) -> list[dict]:
+    """Save independent appliance schedules together, with the same first run."""
+    now = datetime.utcnow()
+    interval = max(10, min(int(settings["interval_minutes"]), 5256000))
+    start_at = _coerce_schedule_datetime(settings.get("start_at"))
+    end_at = _coerce_schedule_datetime(settings.get("end_at"))
+    if start_at and end_at and end_at < start_at:
+        raise ValueError("Schedule end date must be after start date")
+    next_run = start_at if start_at and start_at > now else now + timedelta(minutes=interval)
+    results = []
+    with DatabaseConnectionManager() as connection:
+        cursor = connection.cursor(dictionary=True)
+        try:
+            _ensure_organizations_registry(cursor)
+            _validate_scan_batch(cursor, org_name, plans, expected_org_id)
+            for plan in plans:
+                # Resolve current profiles and discovered URLs again on every scheduled run.
+                selections = [{"scanner": item["scanner"], "profile_id": item["profile_id"]}
+                              for item in plan["payload"]["selections"]]
+                cursor.execute(
+                    """INSERT INTO scan_schedules
+                        (scan_name, scan_mode, scanner, targets, bruteforce, bruteforce_timeout, preferred_node_id,
+                         interval_minutes, enabled, start_at, end_at, next_run_at, created_at, updated_at, selections_json)
+                        VALUES (%s, %s, NULL, %s, %s, %s, %s, %s, TRUE, %s, %s, %s, %s, %s, %s)""",
+                    (plan["scan_name"], plan["scan_mode"], plan["targets"], settings.get("bruteforce", False),
+                     settings.get("bruteforce_timeout", 300), plan["node_id"], interval, start_at, end_at,
+                     next_run, now, now, json.dumps(selections)),
+                )
+                results.append({"schedule_id": int(cursor.lastrowid), "node_id": plan["node_id"],
+                                "node_name": plan["node_name"], "scan_name": plan["scan_name"], "status": "scheduled"})
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            cursor.close()
+    return results
 
 
 def get_scan_schedules(org_name: str) -> list[dict]:

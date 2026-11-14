@@ -22,7 +22,6 @@ from .scanners.bbot import BBotScanner
 from .scanners.nuclei import NucleiScanner, NucleiMode
 from colorama import Fore, Style, init
 from .scanners.recon import WordPressDetector
-from .scanners.asteroid_scanner import AsteroidScanner
 from .scanners.external_vuln import ExternalVulnerabilityScanner
 from .scanners.email import MailSecurityScanner
 import asyncio
@@ -336,12 +335,16 @@ class worker:
         self.require_approved_targets(target)
         logger.info("Running Asteroid scan")
 
+        from .scanners.asteroid_scanner import AsteroidScanner
+
         asteroid_scanner = AsteroidScanner(target, self.org_domain)
         await asyncio.to_thread(asteroid_scanner.run, mode=mode)
 
     async def run_asteroid_modules(self, target, modules: list[str]):
         self.require_approved_targets(target)
         logger.info("Running focused Asteroid modules: %s", ", ".join(modules))
+        from .scanners.asteroid_scanner import AsteroidScanner
+
         asteroid_scanner = AsteroidScanner(target, self.org_domain)
         await asyncio.to_thread(asteroid_scanner.run_modules, modules)
 

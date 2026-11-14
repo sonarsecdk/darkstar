@@ -755,98 +755,47 @@
 
             <!-- Scan Center Tab -->
             <div id="scan-tab" class="tab-panel">
-                <div class="grid-2">
-                    <div class="card">
-                        <div class="card-header">Launch Scan</div>
-                        <div id="scanWorkerWarning" class="form-message form-message-warning hidden" role="alert">
-                            No scanner workers are online. Queued scans will not run until a worker is attached
-                            (see Settings &rarr; Scanner appliances, or the Internal Scanners documentation).
-                        </div>
-                        <form id="scanForm" class="form-vertical">
-                            <fieldset class="form-group">
-                                <legend>Approved assets</legend>
-                                <p class="field-hint">Select IPs and domains from Allowed scan targets in Settings. Network ranges and wildcard rules are not expanded into hosts.</p>
-                                <div id="scanAssetChoices"></div>
-                                <button id="selectAllScanAssetsBtn" type="button" class="btn-secondary btn-sm" disabled>Select all IPs and domains</button>
-                            </fieldset>
-                            <div class="form-group">
-                                <label for="targetsInput">Targets</label>
-                                <textarea id="targetsInput" name="targets" placeholder="example.com, 192.168.1.0/24" rows="3" required></textarea>
-                                <small class="field-hint">You can also enter an approved target, such as a URL or network range. Every target and resolved IP must be approved for this organization.</small>
-                                <span id="scanTargetCount" role="status">0 targets</span>
+                <div class="card scan-builder">
+                    <div class="card-header">Launch scan</div>
+                    <p class="scan-builder-intro">Choose approved targets, then the appliances and installed profiles that should scan them.</p>
+                    <div id="scanWorkerWarning" class="form-message form-message-warning hidden" role="alert">
+                        No scanner workers are online. Connect a worker in Settings &rarr; Scanner appliances before launching a scan.
+                    </div>
+                    <form id="scanForm" class="form-vertical">
+                        <fieldset class="scan-step">
+                            <legend>1. Targets</legend>
+                            <div class="scan-target-grid">
+                                <div class="form-group">
+                                    <label>Approved assets</label>
+                                    <div id="scanAssetChoices"></div>
+                                    <button id="selectAllScanAssetsBtn" type="button" class="btn-secondary btn-sm" disabled>Select all IPs and domains</button>
+                                    <small class="field-hint">Network ranges and wildcard rules are not expanded into individual hosts.</small>
+                                </div>
+                                <div class="form-group">
+                                    <label for="targetsInput">Selected targets</label>
+                                    <textarea id="targetsInput" name="targets" placeholder="example.com, 192.168.1.0/24" rows="3" required></textarea>
+                                    <small class="field-hint">You can also enter an approved URL or network range. Every target and resolved IP must be approved for this organization.</small>
+                                    <span id="scanTargetCount" role="status">0 targets</span>
+                                </div>
                             </div>
-                            <div class="form-group">
-                                <label for="scanNameInput">Scan Name</label>
-                                <input id="scanNameInput" name="scan_name" type="text" placeholder="My security scan" />
-                            </div>
-                            <div class="form-group">
-                                <label for="modeInput">Scan Mode</label>
-                                <select id="modeInput" name="mode" class="filter-select">
-                                    <option value="">Select Mode</option>
-                                    <option value="1">Passive</option>
-                                    <option value="2">Normal</option>
-                                    <option value="3">Aggressive</option>
-                                    <option value="4">Attack Surface</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label for="scannerInput">Individual Scanner (optional)</label>
-                                <select id="scannerInput" name="scanner" class="filter-select">
-                                    <option value="">Select scanner</option>
-                                    <optgroup label="Recon / Discovery">
-                                        <option value="bbot_passive">BBot – passive</option>
-                                        <option value="bbot_normal">BBot – normal</option>
-                                        <option value="bbot_aggressive">BBot – aggressive</option>
-                                        <option value="bbot_attack_surface">BBot – attack surface</option>
-                                        <option value="rustscan">RustScan – port scan</option>
-                                    </optgroup>
-                                    <optgroup label="Web DAST">
-                                        <option value="nikto">Nikto – web server check</option>
-                                        <option value="wapiti">Wapiti – web DAST</option>
-                                        <option value="zap">OWASP ZAP – passive baseline</option>
-                                        <option value="dalfox">Dalfox – XSS scanner</option>
-                                    </optgroup>
-                                    <optgroup label="TLS / Network">
-                                        <option value="testssl">testssl.sh – TLS/SSL audit</option>
-                                        <option value="openvas">OpenVAS – network vulnerability scan</option>
-                                    </optgroup>
-                                    <optgroup label="Nuclei templates">
-                                        <option value="nuclei">Nuclei – standard</option>
-                                        <option value="nucleinetwork">Nuclei – network templates</option>
-                                        <option value="wordpressnuclei">Nuclei – WordPress</option>
-                                    </optgroup>
-                                    <optgroup label="Asteroid modules">
-                                        <option value="asteroid_normal">Asteroid – normal</option>
-                                        <option value="asteroid_aggressive">Asteroid – aggressive</option>
-                                        <option value="retirejs">RetireJS – vulnerable JavaScript libraries</option>
-                                        <option value="vulnscan">Vulnscan – custom templates</option>
-                                    </optgroup>
-                                </select>
-                            </div>
-                            <p class="form-message" id="scanModeHint">Choose a mode or scanners below. Selecting a scanner opens its installed profiles when an appliance is selected.</p>
-                            <div class="form-group">
-                                <label for="applianceInput">Scanner appliance</label>
-                                <select id="applianceInput" name="preferred_node_id" class="filter-select">
-                                    <option value="">Auto - any available appliance</option>
-                                </select>
-                                <small class="field-hint">Auto lets Darkstar pick any online scanner. Choose an appliance to run from that network location.</small>
-                            </div>
-                            <fieldset class="form-group">
-                                <legend>Scanners and profiles</legend>
-                                <p class="field-hint">Choose a connected appliance, tick a scanner, then select its policy or template. A sole connected appliance is selected automatically. Registered appliances need a running worker before they can be selected. Selected scanners run in order; a failure does not stop the others.</p>
-                                <div id="scannerSelections">Choose an appliance first.</div>
-                            </fieldset>
-                            <div class="form-group">
-                                <label>
-                                    <input id="bruteforceInput" name="bruteforce" type="checkbox" />
-                                    Enable Bruteforce
-                                </label>
-                            </div>
-                            <div class="form-group">
-                                <label>
-                                    <input id="recurringScanInput" type="checkbox" />
-                                    Recurring scan
-                                </label>
+                        </fieldset>
+                        <fieldset class="scan-step">
+                            <legend>2. Appliances and profiles</legend>
+                            <p class="field-hint">Select one or more appliances. Each gets its own scan run. Choose the scanners and policies to run on each appliance.</p>
+                            <div id="scannerApplianceChoices" class="scanner-appliance-grid"><p class="field-hint">Loading scanner appliances…</p></div>
+                            <small class="field-hint">Scanners on the same appliance run in order. A failed scanner does not stop the others.</small>
+                        </fieldset>
+                        <fieldset class="scan-step">
+                            <legend>3. Timing and review</legend>
+                            <div class="scan-target-grid">
+                                <div class="form-group">
+                                    <label for="scanNameInput">Scan name (optional)</label>
+                                    <input id="scanNameInput" name="scan_name" type="text" placeholder="My security scan" />
+                                </div>
+                                <div class="form-group scan-timing">
+                                    <label><input id="recurringScanInput" type="checkbox" /> Recurring scan</label>
+                                    <small class="field-hint">Leave unchecked to run now. Recurring scans create one schedule per selected appliance.</small>
+                                </div>
                             </div>
                             <div id="recurringOptions" class="secret-panel hidden">
                                 <div class="filter-grid compact-grid">
@@ -889,25 +838,31 @@
                                 </div>
                                 <p class="form-message">Start and end dates are optional. Darkstar only skips an identical scheduled scan while the same scanner and targets are already active.</p>
                             </div>
-                            <button type="submit" class="btn-primary">Launch Scan</button>
-                            <p id="scanMessage" class="form-message"></p>
-                        </form>
-                    </div>
-
-                    <div class="card">
-                        <div class="card-header">Active Scans</div>
-                        <div id="activeScansList" class="scans-list">
-                            <p class="empty-state">No active scans</p>
-                        </div>
-                    </div>
+                            <details class="scan-advanced">
+                                <summary>Advanced options</summary>
+                                <label><input id="bruteforceInput" name="bruteforce" type="checkbox" /> Enable brute force</label>
+                                <small class="field-hint">Adds password guessing to RustScan service checks.</small>
+                            </details>
+                            <div class="scan-launch-summary" aria-live="polite">
+                                <strong id="scanLaunchSummaryText">0 targets · 0 appliances · Run now</strong>
+                                <ul id="scanLaunchPlan"></ul>
+                            </div>
+                            <button id="launchScanBtn" type="submit" class="btn-primary">Launch scan</button>
+                        </fieldset>
+                        <p id="scanMessage" class="form-message" role="status"></p>
+                    </form>
+                    <div id="scanLaunchResults" aria-live="polite"></div>
                 </div>
-
                 <div class="card">
-                    <div class="card-header">Scheduled Scans</div>
+                    <div class="card-header">Active scans</div>
+                    <div id="activeScansList" class="scans-list"><p class="empty-state">No active scans</p></div>
+                </div>
+                <div class="card">
+                    <div class="card-header">Scheduled scans</div>
                     <div class="table-container">
                         <table class="data-table">
                             <thead>
-                                <tr><th>Name</th><th>Mode</th><th>Appliance</th><th>Interval</th><th>Start</th><th>End</th><th>Next Run</th><th>Status</th><th>Actions</th></tr>
+                                <tr><th>Name</th><th>Scanners</th><th>Appliance</th><th>Interval</th><th>Start</th><th>End</th><th>Next Run</th><th>Status</th><th>Actions</th></tr>
                             </thead>
                             <tbody id="scheduleRows"></tbody>
                         </table>

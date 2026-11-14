@@ -215,26 +215,20 @@ Targets can be entered as:
 
 Multiple targets can be separated with commas or new lines.
 
-### Scan Mode Or Scanner
+### Appliances And Profiles
 
-Use a scan mode when you want a fixed workflow:
+Select one or more connected appliances. Under each appliance, tick the scanners
+to run and choose one installed policy or profile for each scanner. Each appliance
+gets a separate scan run, with its own status, logs and stop button. Scanners on
+the same appliance run in order; different appliances can work concurrently.
 
-- Passive
-- Normal
-- Aggressive
-- Attack Surface
+All selections are validated before any runs are queued. If an appliance or
+profile is unavailable, correct that selection and submit again. Choose an
+appliance that can reach the targets from its network.
 
-Use an individual scanner when you intentionally want to run a specific tool,
-such as BBot, RustScan, Nuclei, OWASP ZAP, Nikto, Wapiti, OpenVAS or an
-Asteroid module.
-
-Do not choose a scan mode and an individual scanner at the same time. The
-backend accepts exactly one of them.
-
-### Scanner Appliance
-
-With `Auto`, Darkstar chooses an available scanner. Choose a specific scanner
-appliance when the scan must run from a particular network position.
+The API and CLI also retain legacy scan modes: Passive, Normal, Aggressive and
+Attack Surface. These select fixed workflows containing several tools. They do
+not select an OpenVAS or ZAP policy; the Scan Center form uses explicit profiles.
 
 ### Scheduled Scans
 
@@ -243,7 +237,10 @@ Recurring scans support:
 - an interval in hours, days, weeks, months or years
 - an optional start date
 - an optional end date
-- an optional preferred appliance
+- the selected appliances and profiles
+
+Each selected appliance gets its own schedule with the same initial timing.
+Schedules can then be paused, run or deleted independently.
 
 Darkstar temporarily skips an identical scheduled scan when the same scanner and
 target set are already active.
@@ -341,8 +338,8 @@ Start the worker:
 docker compose --profile scanner up -d darkstar-scanner
 ```
 
-Then choose the worker that must scan from the internal network in `Scan Center`
-under `Scanner appliance`.
+Then select that worker under **Scan Center → Appliances and profiles** when
+scanning targets on its internal network.
 
 ## Endpoints
 
@@ -535,12 +532,12 @@ Monthly:
 
 ### Scanner selections and installed profiles
 
-Scan Center can run several scanners as one scan. A sole connected appliance is selected
-automatically. Registering an appliance only creates its identity and attach token;
-it must run a worker before it can be selected or report installed profiles. Selecting OpenVAS from Individual Scanner opens its installed
-policy selector; choose a policy before launching. The appliance status shows
+Scan Center can select several appliances and several scanners on each appliance.
+Registering an appliance creates its identity and attach token;
+it must run a worker before it can be selected or report installed profiles.
+The appliance status shows
 active jobs and capacity (for example, 0 active jobs; capacity 1 means idle).
-Choose an appliance, tick the
+Choose appliances, tick their
 scanners, then select one installed profile for each. Search and page through
 large catalogs. OpenVAS exposes its scan configurations; Nuclei exposes installed
 YAML templates; ZAP offers recon (spider and passive scan) and installed `.policy`

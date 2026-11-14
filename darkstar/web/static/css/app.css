@@ -2824,7 +2824,7 @@ textarea::selection {
     display: none !important;
 }
 
-/* Keep installed profile controls within the existing Scan Center form. */
+/* Scan Center follows one path: targets, appliances, then profiles and timing. */
 #scanForm fieldset {
     min-width: 0;
     margin: 0;
@@ -2836,22 +2836,40 @@ textarea::selection {
 #scanForm legend {
     padding: 0 var(--space-sm);
     font-size: 14px;
+    font-weight: 600;
     color: var(--color-text-primary);
 }
 
-#scannerSelections,
-#scannerSelections .profile-controls:not(.hidden),
-#scannerSelections .profile-controls label {
-    display: grid;
-    gap: var(--space-sm);
-    min-width: 0;
-}
-
-#scannerSelections select,
-#scannerSelections input[type="search"] {
-    width: 100%;
-    min-width: 0;
-    box-sizing: border-box;
+.scan-builder-intro { margin: 0 0 var(--space-lg); color: var(--color-text-secondary); }
+.scan-step { display: grid; gap: var(--space-md); }
+.scan-target-grid, .scanner-appliance-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-md); }
+.scan-target-grid > *, .scanner-appliance-card, .scanner-engine { min-width: 0; }
+#scanAssetChoices { display: grid; gap: var(--space-sm); max-height: 220px; overflow-y: auto; }
+.scanner-appliance-card { align-self: start; display: grid; gap: var(--space-sm); background: var(--color-bg-primary); }
+#scanForm .scanner-appliance-card.selected { border-color: var(--color-primary); }
+.scanner-appliance-heading, .scanner-engine-heading { display: flex; align-items: center; gap: var(--space-sm); overflow-wrap: anywhere; }
+.scanner-appliance-engines { overflow-wrap: anywhere; }
+.scanner-engine-list { display: grid; gap: var(--space-sm); margin-top: var(--space-sm); }
+#scanForm .scanner-engine { padding: var(--space-sm) var(--space-md); background: var(--color-bg-secondary); }
+.scanner-engine .profile-controls:not(.hidden), .scanner-engine .profile-controls label { display: grid; gap: var(--space-sm); min-width: 0; }
+.scanner-engine select, .scanner-engine input[type="search"] { width: 100%; min-width: 0; box-sizing: border-box; }
+.scanner-engine .profile-pagination { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm); }
+.scan-timing { justify-content: center; }
+.scan-advanced { border-top: 1px solid var(--color-border); padding-top: var(--space-sm); }
+.scan-advanced summary { cursor: pointer; color: var(--color-text-secondary); }
+.scan-advanced label { display: block; margin: var(--space-sm) 0; }
+.scan-launch-summary { padding: var(--space-md); background: var(--color-bg-primary); border-radius: var(--radius-md); }
+#scanLaunchPlan, .scan-launch-results { list-style: none; padding: 0; margin: 0; }
+#scanLaunchPlan li { display: grid; gap: var(--space-xs); margin-top: var(--space-sm); overflow-wrap: anywhere; }
+#scanLaunchPlan li span { color: var(--color-text-secondary); font-size: 13px; }
+.scan-launch-results li { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-sm); padding: var(--space-md); border: 1px solid var(--color-border); border-radius: var(--radius-md); margin-top: var(--space-sm); }
+.scan-launch-results li > span:first-child { flex: 1 1 240px; overflow-wrap: anywhere; }
+#scan-tab .form-message:empty { display: none; }
+#scan-tab button:disabled { opacity: 0.45; cursor: not-allowed; }
+#launchScanBtn { justify-self: start; min-width: 180px; }
+@media (max-width: 850px) {
+    .scan-target-grid, .scanner-appliance-grid { grid-template-columns: minmax(0, 1fr); }
+    #launchScanBtn { width: 100%; }
 }
 
 /* Asset onboarding uses the same theme tokens as the customer dashboard. */

@@ -53,10 +53,11 @@ def _json(route, payload, status=200):
     )
 
 
-def _install_dashboard_mocks(page, base_url, role="tenant_admin"):
+def _install_dashboard_mocks(page, base_url, role="tenant_admin", theme="darkstar"):
     state = {
         "scan_requests": [],
         "schedule_requests": [],
+        "queued_scans": [],
         "notification_updates": [],
         "notification_tests": 0,
         "unexpected": [],
@@ -132,18 +133,7 @@ def _install_dashboard_mocks(page, base_url, role="tenant_admin"):
                 "created_at": "2026-05-14T09:00:00Z",
             },
         ]
-        for index, request in enumerate(state["scan_requests"], start=1):
-            items.insert(
-                0,
-                {
-                    "id": 776 + index,
-                    "scan_name": request.get("scan_name") or "Playwright queued scan",
-                    "scan_mode": str(request.get("mode") or request.get("scanner") or ""),
-                    "status": "queued",
-                    "targets": request.get("targets", ""),
-                    "created_at": "2026-05-14T10:00:00Z",
-                },
-            )
+        items = list(reversed(state["queued_scans"])) + items
         return {"items": items}
 
     def api_handler(route):
@@ -164,7 +154,7 @@ def _install_dashboard_mocks(page, base_url, role="tenant_admin"):
                     "organization": "Acme Security",
                     "org_db": "tenant_db",
                     "role": role,
-                    "user": {"email": "analyst@example.org"},
+                    "user": {"email": "analyst@example.org", "theme": theme},
                     "auth_method": "session",
                     "organizations": [
                         {"org_name": "Acme Security", "org_db_name": "tenant_db", "role": "tenant_admin"}
@@ -196,7 +186,17 @@ def _install_dashboard_mocks(page, base_url, role="tenant_admin"):
         if path == "/api/scans/start" and method == "POST":
             payload = request.post_data_json or {}
             state["scan_requests"].append(payload)
-            _json(route, {"ok": True, "scan_id": 776 + len(state["scan_requests"]), "status": "queued"})
+            runs = []
+            for appliance in payload.get("appliances") or [{"node_id": payload.get("preferred_node_id")}]:
+                scan_id = 777 + len(state["queued_scans"])
+                name = payload.get("scan_name") or "Playwright queued scan"
+                state["queued_scans"].append({"id": scan_id, "scan_name": name,
+                    "scan_mode": "selected" if payload.get("appliances") else str(payload.get("mode") or payload.get("scanner") or ""),
+                    "status": "queued", "targets": payload.get("targets", ""), "created_at": "2026-05-14T10:00:00Z"})
+                runs.append({"scan_id": scan_id, "scan_name": name, "node_id": appliance["node_id"],
+                             "node_name": "Office scanner" if appliance["node_id"] == "node-1" else "Web scanner", "status": "queued"})
+            _json(route, {"ok": True, "scan_id": runs[0]["scan_id"], "scans": runs,
+                          "scan_ids": [run["scan_id"] for run in runs], "status": "queued"})
             return
         if path == "/api/vulnerabilities" and method == "GET":
             _json(route, {"items": VULNERABILITIES})
@@ -327,7 +327,11 @@ def _install_dashboard_mocks(page, base_url, role="tenant_admin"):
         if path == "/api/schedules" and method == "POST":
             payload = request.post_data_json or {}
             state["schedule_requests"].append(payload)
-            _json(route, {"ok": True, "schedule_id": 12})
+            schedules = [{"schedule_id": 12 + index, "node_id": item["node_id"],
+                          "node_name": "Office scanner" if item["node_id"] == "node-1" else "Web scanner",
+                          "scan_name": payload.get("scan_name") or "Recurring scan"}
+                         for index, item in enumerate(payload.get("appliances", []))]
+            _json(route, {"ok": True, "schedules": schedules, "schedule_ids": [item["schedule_id"] for item in schedules]})
             return
         if path == "/api/notifications/settings" and method == "GET":
             _json(
@@ -426,17 +430,19 @@ def test_dashboard_vulnerabilities_and_scan_center_workflow(darkstar_server):
             expect(page.locator("#scheduleRows")).to_contain_text("Weekly perimeter")
             page.locator("#targetsInput").fill("app.example.com, portal.example.com")
             page.locator("#scanNameInput").fill("Playwright normal scan")
-            page.locator("#modeInput").select_option("2")
-            page.locator("#applianceInput").select_option("node-1")
-            page.get_by_role("button", name="Launch Scan").click()
-            expect(page.locator("#debug-tab.active")).to_be_visible()
-            expect(page.locator("#debugOutput")).to_contain_text("Queued for scanner workers")
+            page.locator('.scan-appliance-choice[value="node-1"]').check()
+            openvas = page.locator('.scanner-engine').filter(has=page.locator('input[value="openvas"]'))
+            openvas.locator('.scanner-choice').check()
+            openvas.locator('select').select_option('network-policy')
+            page.locator('#launchScanBtn').click()
+            expect(page.locator('#scan-tab.active')).to_be_visible()
+            expect(page.locator('#scanLaunchResults')).to_contain_text('Run #777')
+            page.locator('#scanLaunchResults .open-debug-scan-btn').click()
+            expect(page.locator('#debugOutput')).to_contain_text('Queued for scanner workers')
 
             assert mock_state["scan_requests"][-1] == {
                 "targets": "app.example.com, portal.example.com",
-                "mode": 2,
-                "scanner": None,
-                "preferred_node_id": "node-1",
+                "appliances": [{"node_id": "node-1", "selections": [{"scanner": "openvas", "profile_id": "network-policy"}]}],
                 "scan_name": "Playwright normal scan",
                 "bruteforce": False,
                 "bruteforce_timeout": 300,
@@ -575,45 +581,84 @@ def test_risk_acceptance_filter_and_revocation(darkstar_server):
             browser.close()
 
 
-def test_scan_center_selects_profiles_and_keeps_them_in_schedules(darkstar_server):
+@pytest.mark.parametrize('viewport,theme', [({'width': 1440, 'height': 1100}, 'midnight'), ({'width': 390, 'height': 844}, 'daylight')])
+def test_scan_center_keeps_profiles_across_appliances_and_schedules(darkstar_server, viewport, theme):
     sync_api = pytest.importorskip('playwright.sync_api')
     expect = sync_api.expect
     with sync_api.sync_playwright() as playwright:
         browser = playwright.chromium.launch()
         try:
-            page = browser.new_page(viewport={"width": 1440, "height": 1200})
-            state = _install_dashboard_mocks(page, darkstar_server, role="platform_admin")
-            page.goto(f'{darkstar_server}/', wait_until='networkidle')
+            page = browser.new_page(viewport=viewport)
+            state = _install_dashboard_mocks(page, darkstar_server, role="platform_admin", theme=theme)
+            errors = []
+            page.on('pageerror', lambda error: errors.append(str(error)))
+            page.route('**/api/scanner-nodes/available', lambda route: _json(route, {'items': [
+                {'node_id': node, 'name': name, 'status': 'online', 'last_seen_at': datetime.now(timezone.utc).replace(tzinfo=None).isoformat()}
+                for node, name in [('node-1', 'Office scanner'), ('node-2', 'Web scanner')]]
+            }))
+            page.route('**/api/scanner-nodes/node-2/profiles?*', lambda route: _json(route, {
+                'scanners': ['zap'], 'total': 2, 'items': [{'scanner': 'zap', 'id': 'default', 'name': 'Recon'},
+                                                        {'scanner': 'zap', 'id': 'active', 'name': 'Active: Full'}],
+            }))
+            page.goto(darkstar_server, wait_until='networkidle')
             page.locator('[data-tab="scan"]').click()
-            page.locator('#applianceInput').select_option('node-1')
             page.locator('#targetsInput').fill('192.0.2.1')
-            page.locator('#modeInput').select_option('2')
-            openvas = page.locator('#scannerSelections fieldset').filter(has=page.locator('input[value="openvas"]'))
-            zap = page.locator('#scannerSelections fieldset').filter(has=page.locator('input[value="zap"]'))
-            openvas.locator('[type="checkbox"]').check()
-            zap.locator('[type="checkbox"]').check()
-            expect(page.locator('#modeInput')).to_have_value('')
-            page.get_by_role('button', name='Launch Scan').click()
-            expect(page.locator('#scanMessage')).to_have_text('Choose a profile for each selected scanner.')
+            office = page.locator('.scanner-appliance-card[data-node-id="node-1"]')
+            web = page.locator('.scanner-appliance-card[data-node-id="node-2"]')
+            office.locator('.scan-appliance-choice').check()
+            openvas = office.locator('.scanner-engine').filter(has=page.locator('input[value="openvas"]'))
+            openvas.locator('.scanner-choice').check()
             openvas.locator('select').select_option('network-policy')
-            zap.locator('[type="search"]').fill('Recon')
-            expect(zap.locator('select option')).to_have_count(2)
+            web.locator('.scan-appliance-choice').check()
+            zap = web.locator('.scanner-engine').filter(has=page.locator('input[value="zap"]'))
+            zap.locator('.scanner-choice').check()
             zap.locator('select').select_option('default')
-            page.get_by_role('button', name='Launch Scan').click()
-            expect(page.locator('#debug-tab.active')).to_be_visible()
-            selections = [{'scanner': 'openvas', 'profile_id': 'network-policy'}, {'scanner': 'zap', 'profile_id': 'default'}]
-            assert state['scan_requests'][-1]['selections'] == selections
-            assert state['scan_requests'][-1]['mode'] is None
+            web.locator('.scan-appliance-choice').uncheck()
+            expect(openvas.locator('select')).to_have_value('network-policy')
+            web.locator('.scan-appliance-choice').check()
+            expect(zap.locator('select')).to_have_value('default')
+            page.locator('[data-tab="dashboard"]').click()
             page.locator('[data-tab="scan"]').click()
+            expect(openvas.locator('select')).to_have_value('network-policy')
+            expect(zap.locator('select')).to_have_value('default')
+            expect(page.locator('#modeInput, #scannerInput, #applianceInput')).to_have_count(0)
+            expect(page.locator('#scanLaunchSummaryText')).to_have_text('1 target · 2 appliances · Run now')
+            expect(page.locator('#scanLaunchPlan')).to_contain_text('OpenVAS / Network scan')
+            expect(page.locator('#scanLaunchPlan')).to_contain_text('OWASP ZAP / Recon')
+            page.evaluate('(theme) => document.documentElement.dataset.theme = theme', theme)
+            page.locator('#scannerApplianceChoices').scroll_into_view_if_needed()
+            Path('test-results/playwright').mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=f'test-results/playwright/multi-appliance-{viewport["width"]}.png', full_page=True)
+            assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
+            page.locator('#launchScanBtn').click()
+            expect(page.locator('#scan-tab.active')).to_be_visible()
+            expect(page.locator('#scanLaunchResults li')).to_have_count(2)
+            expect(page.locator('#scanLaunchResults')).to_contain_text('Run #777')
+            expect(page.locator('#scanLaunchResults')).to_contain_text('Run #778')
+            expect(page.locator('#scanLaunchResults .open-debug-scan-btn')).to_have_count(2)
+            expect(page.locator('#scanLaunchResults .stop-scan-btn')).to_have_count(2)
+            appliances = [
+                {'node_id': 'node-1', 'selections': [{'scanner': 'openvas', 'profile_id': 'network-policy'}]},
+                {'node_id': 'node-2', 'selections': [{'scanner': 'zap', 'profile_id': 'default'}]},
+            ]
+            assert state['scan_requests'][-1] == {'targets': '192.0.2.1', 'appliances': appliances,
+                                                'scan_name': None, 'bruteforce': False, 'bruteforce_timeout': 300}
+            state['queued_scans'][0]['status'] = 'failed'
+            state['queued_scans'][1]['status'] = 'running'
+            page.evaluate('refreshDashboard()')
+            expect(page.locator('#scanLaunchResults li').nth(0)).to_contain_text('failed')
+            expect(page.locator('#scanLaunchResults li').nth(1)).to_contain_text('running')
+            expect(page.locator('#scanLaunchResults .stop-scan-btn')).to_have_count(1)
+            page.screenshot(path=f'test-results/playwright/multi-appliance-results-{viewport["width"]}.png', full_page=True)
             page.locator('#recurringScanInput').check()
-            page.get_by_role('button', name='Launch Scan').click()
-            expect(page.locator('#scanMessage')).to_have_text('Recurring scan created.')
-            assert state['schedule_requests'][-1]['selections'] == selections
-            page.locator('#modeInput').select_option('1')
-            expect(openvas.locator('[type="checkbox"]')).not_to_be_checked()
-            expect(zap.locator('[type="checkbox"]')).not_to_be_checked()
+            page.locator('#launchScanBtn').click()
+            expect(page.locator('#scanMessage')).to_contain_text('2 recurring schedules created.')
+            expect(page.locator('#scanLaunchResults li')).to_have_count(2)
+            assert state['schedule_requests'][-1]['appliances'] == appliances
+            assert state['schedule_requests'][-1]['interval_minutes'] == 1440
+            assert not {'mode', 'scanner', 'selections', 'preferred_node_id'} & state['schedule_requests'][-1].keys()
             assert state['unexpected'] == []
-            page.screenshot(path='test-results/playwright/scanner-selection.png', full_page=True)
+            assert errors == []
         finally:
             browser.close()
 
@@ -922,21 +967,24 @@ def test_approved_assets_become_explicit_scan_targets(darkstar_server, role, rec
             page.locator('.scan-asset-choice[value="2001:db8::1"]').uncheck()
             expect(page.locator('#targetsInput')).to_have_value('192.0.2.1\nexample.test')
             expect(page.locator('#scanTargetCount')).to_have_text('2 targets')
+            page.locator('.scan-appliance-choice[value="node-1"]').check()
             for scanner, profile in [('openvas', 'network-policy'), ('zap', 'default')]:
-                field = page.locator('#scannerSelections fieldset').filter(has=page.locator(f'input[value="{scanner}"]'))
+                field = page.locator('.scanner-engine').filter(has=page.locator(f'input[value="{scanner}"]'))
                 field.locator('input[type="checkbox"]').check()
                 field.locator('select').select_option(profile)
             if recurring:
                 page.locator('#recurringScanInput').check()
             page.locator('#scanForm button[type="submit"]').click()
             if recurring:
-                expect(page.locator('#scanMessage')).to_have_text('Recurring scan created.')
+                expect(page.locator('#scanMessage')).to_contain_text('1 recurring schedule created.')
             else:
-                expect(page.locator('#debug-tab.active')).to_be_visible()
+                expect(page.locator('#scan-tab.active')).to_be_visible()
+                expect(page.locator('#scanLaunchResults')).to_contain_text('Run #777')
             requests = mock_state['schedule_requests'] if recurring else mock_state['scan_requests']
             assert len(requests) == 1
             assert requests[0]['targets'] == '192.0.2.1\nexample.test'
-            assert requests[0]['selections'] == [
+            assert requests[0]['appliances'][0]['node_id'] == 'node-1'
+            assert requests[0]['appliances'][0]['selections'] == [
                 {'scanner': 'openvas', 'profile_id': 'network-policy'},
                 {'scanner': 'zap', 'profile_id': 'default'},
             ]
@@ -1023,7 +1071,6 @@ def test_organization_switch_discards_old_assets_and_identity(darkstar_server):
             # The cookie can change while the switch response is still pending.
             page.locator('[data-tab="scan"]').click()
             page.locator('#targetsInput').fill('198.51.100.1')
-            page.locator('#modeInput').select_option('1')
             page.locator('#scanForm button[type="submit"]').click()
             assert mock_state['scan_requests'] == []
             _json(switches.pop(), identity())
@@ -1069,6 +1116,11 @@ def test_identity_refresh_clears_previous_organization_assets(darkstar_server, t
             if tab == 'scan':
                 page.locator('.scan-asset-choice').check()
                 expect(page.locator('#targetsInput')).to_have_value('192.0.2.1')
+                page.locator('.scan-appliance-choice').check()
+                openvas = page.locator('.scanner-engine').filter(has=page.locator('input[value="openvas"]'))
+                openvas.locator('.scanner-choice').check()
+                openvas.locator('select').select_option('network-policy')
+                page.locator('#scanNameInput').fill('Alpha private scan')
             # A second browser tab changes the session; this tab discovers it via /api/me.
             active_org = 'other_tenant'
             page.evaluate('() => refreshDashboard()')
@@ -1076,6 +1128,8 @@ def test_identity_refresh_clears_previous_organization_assets(darkstar_server, t
             expect(page.locator('#dashboard-tab.active')).to_be_visible()
             expect(page.locator('#approvedAssetRows')).to_have_text('')
             expect(page.locator('#targetsInput')).to_have_value('')
+            expect(page.locator('.scan-appliance-choice:checked')).to_have_count(0)
+            expect(page.locator('#scanNameInput')).to_have_value('')
             page.locator('[data-tab="assets"]').click()
             expect(page.locator('#approvedAssetRows')).to_contain_text('198.51.100.1')
             expect(page.locator('#approvedAssetRows')).not_to_contain_text('192.0.2.1')
@@ -1085,38 +1139,7 @@ def test_identity_refresh_clears_previous_organization_assets(darkstar_server, t
             browser.close()
 
 
-def test_individual_openvas_choice_opens_installed_policies(darkstar_server):
-    sync_api = pytest.importorskip('playwright.sync_api')
-    expect = sync_api.expect
-    with sync_api.sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
-        try:
-            page = browser.new_page(viewport={'width': 1440, 'height': 1200})
-            mock_state = _install_dashboard_mocks(page, darkstar_server, role='platform_admin')
-            page.goto(darkstar_server, wait_until='networkidle')
-            page.locator('[data-tab="scan"]').click()
-            expect(page.locator('#applianceInput')).to_have_value('node-1')
-            expect(page.locator('#applianceInput option:checked')).to_contain_text('0 active jobs; capacity 2')
-            page.locator('#scannerInput').select_option('openvas')
-            openvas = page.locator('#scannerSelections fieldset').filter(has=page.locator('input[value="openvas"]'))
-            expect(openvas.locator('[type="checkbox"]')).to_be_checked()
-            expect(openvas.locator('select')).to_be_visible()
-            expect(openvas.locator('select option')).to_have_count(2)
-            page.locator('#targetsInput').fill('192.0.2.1')
-            page.get_by_role('button', name='Launch Scan').click()
-            expect(page.locator('#scanMessage')).to_have_text('Choose a profile for each selected scanner.')
-            assert mock_state['scan_requests'] == []
-            openvas.locator('select').select_option('network-policy')
-            page.get_by_role('button', name='Launch Scan').click()
-            expect(page.locator('#debug-tab.active')).to_be_visible()
-            assert mock_state['scan_requests'][-1]['selections'] == [{'scanner': 'openvas', 'profile_id': 'network-policy'}]
-            assert mock_state['scan_requests'][-1]['scanner'] is None
-            assert mock_state['unexpected'] == []
-        finally:
-            browser.close()
-
-
-def test_openvas_requires_appliance_and_policy_before_launch(darkstar_server):
+def test_scan_builder_requires_appliance_scanner_and_installed_policy(darkstar_server):
     sync_api = pytest.importorskip('playwright.sync_api')
     expect = sync_api.expect
     with sync_api.sync_playwright() as playwright:
@@ -1124,23 +1147,27 @@ def test_openvas_requires_appliance_and_policy_before_launch(darkstar_server):
         try:
             page = browser.new_page()
             mock_state = _install_dashboard_mocks(page, darkstar_server, role='platform_admin')
-            page.route('**/api/scanner-nodes/available', lambda route: _json(route, {'items': [
-                {'node_id': 'node-1', 'name': 'Office', 'status': 'online'},
-                {'node_id': 'node-2', 'name': 'Other office', 'status': 'online'},
-            ]}))
             page.goto(darkstar_server, wait_until='networkidle')
             page.locator('[data-tab="scan"]').click()
-            expect(page.locator('#applianceInput option')).to_have_count(3)
-            expect(page.locator('#applianceInput')).to_have_value('')
-            page.locator('#scannerInput').select_option('openvas')
             page.locator('#targetsInput').fill('192.0.2.1')
-            page.get_by_role('button', name='Launch Scan').click()
-            expect(page.locator('#scanMessage')).to_have_text('Choose an appliance and an installed OpenVAS policy below.')
+            page.locator('#launchScanBtn').click()
+            expect(page.locator('#scanMessage')).to_have_text('Select at least one connected appliance.')
+            page.locator('.scan-appliance-choice[value="node-1"]').check()
+            expect(page.locator('.scanner-appliance-status')).to_have_text('Online · 0 active jobs · capacity 2')
+            page.locator('#launchScanBtn').click()
+            expect(page.locator('#scanMessage')).to_have_text('Choose at least one scanner on each selected appliance.')
+            openvas = page.locator('.scanner-engine').filter(has=page.locator('input[value="openvas"]'))
+            openvas.locator('.scanner-choice').check()
+            page.locator('#launchScanBtn').click()
+            expect(page.locator('#scanMessage')).to_have_text('Choose a profile for each selected scanner.')
             assert mock_state['scan_requests'] == []
-            page.locator('#applianceInput').select_option('node-1')
-            openvas = page.locator('#scannerSelections fieldset').filter(has=page.locator('input[value="openvas"]'))
-            expect(openvas.locator('[type="checkbox"]')).to_be_checked()
-            expect(openvas.locator('select option')).to_have_count(2)
+            expect(openvas.locator('.profile-search')).to_be_hidden()
+            expect(openvas.locator('.profile-pagination')).to_be_hidden()
+            openvas.locator('select').select_option('network-policy')
+            page.locator('#launchScanBtn').click()
+            expect(page.locator('#scanLaunchResults')).to_contain_text('Run #777')
+            assert mock_state['scan_requests'][-1]['appliances'] == [
+                {'node_id': 'node-1', 'selections': [{'scanner': 'openvas', 'profile_id': 'network-policy'}]}]
             assert mock_state['unexpected'] == []
         finally:
             browser.close()
@@ -1169,12 +1196,13 @@ def test_profile_catalog_deduplicates_pending_loads_and_retries_empty_catalog(da
             page.evaluate('() => new Promise(resolve => requestAnimationFrame(resolve))')
             assert len(catalog_requests) == 1
             _json(catalog_requests[0], {'items': [], 'scanners': [], 'total': 0})
-            expect(page.locator('#scannerSelections')).to_contain_text('This appliance has not reported any installed profiles yet.')
+            expect(page.locator('.scanner-appliance-engines')).to_have_text('No installed profiles reported')
             with page.expect_response('**/api/scanner-nodes/node-1/profiles?limit=1'):
                 page.locator('[data-tab="scan"]').click()
             assert len(catalog_requests) == 2
-            page.locator('#scannerInput').select_option('openvas')
-            openvas = page.locator('#scannerSelections fieldset').filter(has=page.locator('input[value="openvas"]'))
+            page.locator('.scan-appliance-choice[value="node-1"]').check()
+            page.locator('.scanner-choice[value="openvas"]').check()
+            openvas = page.locator('.scanner-engine').filter(has=page.locator('input[value="openvas"]'))
             expect(openvas.locator('select option')).to_have_count(2)
             openvas.locator('select').select_option('network-policy')
             expect(openvas.locator('select')).to_have_value('network-policy')
@@ -1184,7 +1212,7 @@ def test_profile_catalog_deduplicates_pending_loads_and_retries_empty_catalog(da
             browser.close()
 
 
-def test_connected_appliance_is_selected_instead_of_unattached_registration(darkstar_server):
+def test_unattached_appliance_is_disabled_while_connected_profiles_are_available(darkstar_server):
     sync_api = pytest.importorskip('playwright.sync_api')
     expect = sync_api.expect
     with sync_api.sync_playwright() as playwright:
@@ -1199,14 +1227,62 @@ def test_connected_appliance_is_selected_instead_of_unattached_registration(dark
             ]}))
             page.goto(darkstar_server, wait_until='networkidle')
             page.locator('[data-tab="scan"]').click()
-            expect(page.locator('#applianceInput')).to_have_value('node-1')
-            expect(page.locator('#applianceInput option[value="unattached"]')).to_be_disabled()
-            expect(page.locator('#applianceInput option[value="unattached"]')).to_contain_text('not connected')
-            page.locator('#scannerInput').select_option('openvas')
-            openvas = page.locator('#scannerSelections fieldset').filter(has=page.locator('input[value="openvas"]'))
+            expect(page.locator('.scan-appliance-choice[value="node-1"]')).to_be_enabled()
+            expect(page.locator('.scan-appliance-choice[value="unattached"]')).to_be_disabled()
+            expect(page.locator('.scanner-appliance-card[data-node-id="unattached"]')).to_contain_text('Not connected')
+            page.locator('.scan-appliance-choice[value="node-1"]').check()
+            page.locator('.scanner-choice[value="openvas"]').check()
+            openvas = page.locator('.scanner-engine').filter(has=page.locator('input[value="openvas"]'))
             expect(openvas.locator('select')).to_be_visible()
             expect(openvas.locator('select option')).to_have_count(2)
             assert mock_state['scan_requests'] == []
+            assert mock_state['unexpected'] == []
+        finally:
+            browser.close()
+
+
+def test_large_profile_catalog_keeps_selection_during_paging_and_search(darkstar_server):
+    sync_api = pytest.importorskip('playwright.sync_api')
+    expect = sync_api.expect
+    with sync_api.sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page()
+            mock_state = _install_dashboard_mocks(page, darkstar_server, role='tenant_admin')
+            profiles = [{'scanner': 'nuclei', 'id': f'template-{number}', 'name': f'Template {number:03}'}
+                        for number in range(120)]
+
+            def catalog(route):
+                query = parse_qs(urlparse(route.request.url).query)
+                search = query.get('search', [''])[0].lower()
+                offset = int(query.get('offset', ['0'])[0])
+                limit = int(query.get('limit', ['100'])[0])
+                matches = [item for item in profiles if search in item['name'].lower()]
+                _json(route, {'scanners': ['nuclei'], 'total': len(matches), 'items': matches[offset:offset + limit]})
+
+            page.route('**/api/scanner-nodes/node-1/profiles?*', catalog)
+            page.goto(darkstar_server, wait_until='networkidle')
+            page.locator('[data-tab="scan"]').click()
+            page.locator('.scan-appliance-choice').check()
+            field = page.locator('.scanner-engine')
+            field.locator('.scanner-choice').check()
+            expect(field.locator('.profile-search')).to_be_visible()
+            expect(field.locator('.profile-count')).to_have_text('1–100 of 120')
+            field.locator('select').select_option('template-0')
+            field.locator('.profile-next').click()
+            expect(field.locator('.profile-count')).to_have_text('101–120 of 120')
+            expect(field.locator('select')).to_have_value('template-0')
+            expect(field.locator('select option')).to_have_count(22)  # blank, retained selection, current page
+            field.locator('[type="search"]').fill('119')
+            expect(field.locator('select option')).to_have_count(3)
+            expect(field.locator('select')).to_have_value('template-0')
+            field.locator('select').select_option('template-119')
+            expect(page.locator('#scanLaunchPlan')).to_contain_text('Nuclei / Template 119')
+            page.locator('#targetsInput').fill('192.0.2.1')
+            page.locator('#launchScanBtn').click()
+            expect(page.locator('#scanLaunchResults')).to_contain_text('Run #777')
+            assert mock_state['scan_requests'][-1]['appliances'] == [
+                {'node_id': 'node-1', 'selections': [{'scanner': 'nuclei', 'profile_id': 'template-119'}]}]
             assert mock_state['unexpected'] == []
         finally:
             browser.close()

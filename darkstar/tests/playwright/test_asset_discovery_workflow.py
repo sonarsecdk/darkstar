@@ -79,6 +79,9 @@ def install_inventory(page, base_url, role='platform_admin'):
     page.route('**/api/discoveries', discoveries)
     page.route('**/api/asset-inventory/approve', approve)
     page.route('**/api/asset-inventory/scanners', settings)
+    page.route('**/api/scanner-nodes/node-no-discovery/profiles?*', lambda route: _json(route, {
+        'scanners': [], 'items': [], 'total': 0,
+    }))
     page.route('**/api/scanner-nodes/available', lambda route: _json(route, {'items': [
         {'node_id': 'node-1', 'name': 'Office discovery worker', 'status': 'online', 'discovery_supported': True,
          'last_seen_at': datetime.now(timezone.utc).replace(tzinfo=None).isoformat(), 'running_jobs': 0, 'max_parallel_jobs': 1},

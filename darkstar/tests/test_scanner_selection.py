@@ -219,6 +219,7 @@ def test_zap_imports_and_executes_selected_active_policy(monkeypatch, tmp_path, 
     scanner = ZAPScanner('https://example.test', 'org', profile='custom.policy')
     scanner._start_daemon = Mock(return_value=True)
     scanner._stop_daemon = Mock()
+    scanner._crawl_browser = Mock()
     calls = []
     imported = False
     def api(path):
@@ -241,6 +242,7 @@ def test_zap_imports_and_executes_selected_active_policy(monkeypatch, tmp_path, 
     scanner._zap_api = api
     scanner.run()
     active = next(path for path in calls if '/ascan/action/scan/' in path)
+    scanner._crawl_browser.assert_called_once_with('https://example.test')
     assert parse_qs(urlsplit(active).query)['scanPolicyName'] == [assigned_name]
     assert any('importScanPolicy' in path for path in calls)
     scanner._stop_daemon.assert_called_once()

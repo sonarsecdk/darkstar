@@ -549,6 +549,16 @@ def collect_dockerfile_tools(root: Path, catalog: ComponentCatalog) -> None:
                 installer="GitHub release archive",
                 vcs_url="https://github.com/zaproxy/zaproxy.git",
             )
+        firefox_version = build_args.get("FIREFOX_VERSION")
+        if firefox_version:
+            add_tool_component(
+                catalog,
+                rel_path,
+                "firefox",
+                ecosystem="mozilla-release",
+                version=resolve_build_args(firefox_version),
+                installer="Mozilla release archive",
+            )
 
 
 def build_sbom(root: Path) -> dict[str, object]:

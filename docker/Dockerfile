@@ -121,6 +121,12 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone &
     libssh-dev \
     libpcre3 \
     libgtk2.0-0 \
+    libgtk-3-0 \
+    libdbus-glib-1-2 \
+    libasound2 \
+    libxt6 \
+    fonts-liberation \
+    xz-utils \
     libmysqlclient21 \
     libpq5 \
     libsvn1 \
@@ -172,8 +178,8 @@ RUN git init /opt/testssl && \
     chmod +x /opt/testssl/testssl.sh && \
     ln -sf /opt/testssl/testssl.sh /usr/local/bin/testssl.sh
 
-# Install OWASP ZAP (latest stable release)
-ARG ZAP_VERSION=2.16.0
+# Install OWASP ZAP with the Client Spider API used for JavaScript applications.
+ARG ZAP_VERSION=2.17.0
 RUN wget -q --tries=5 --retry-connrefused --waitretry=2 \
         "https://github.com/zaproxy/zaproxy/releases/download/v${ZAP_VERSION}/ZAP_${ZAP_VERSION}_Linux.tar.gz" \
         -O /tmp/zap.tar.gz && \
@@ -181,6 +187,18 @@ RUN wget -q --tries=5 --retry-connrefused --waitretry=2 \
     mv /opt/ZAP_${ZAP_VERSION} /opt/zaproxy && \
     ln -sf /opt/zaproxy/zap.sh /usr/local/bin/zap.sh && \
     rm /tmp/zap.tar.gz
+
+# Mozilla's standalone ESR build avoids Ubuntu's Snap-only Firefox package.
+ARG FIREFOX_VERSION=153.7.0esr
+ARG FIREFOX_SHA512=742a3dbc5488ab50040efe6b0798aa5fbc3d22c1d0d1c142718f05dcc602aed7649d87e2159c65f44db4d26795ba3fac60c1dc22f97a5b593ab72c55583f30c3
+RUN wget -q --tries=5 --retry-connrefused --waitretry=2 \
+        "https://archive.mozilla.org/pub/firefox/releases/${FIREFOX_VERSION}/linux-x86_64/en-US/firefox-${FIREFOX_VERSION}.tar.xz" \
+        -O /tmp/firefox.tar.xz && \
+    echo "${FIREFOX_SHA512}  /tmp/firefox.tar.xz" | sha512sum --check - && \
+    tar xJf /tmp/firefox.tar.xz -C /opt && \
+    ln -sf /opt/firefox/firefox /usr/local/bin/firefox && \
+    rm /tmp/firefox.tar.xz && \
+    firefox --version
 
 # Copy compiled binaries from build stages
 COPY --from=go-builder /go/bin/nuclei /usr/local/bin/

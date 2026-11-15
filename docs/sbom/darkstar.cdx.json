@@ -215,6 +215,23 @@
     },
     {
       "type": "operating-system",
+      "bom-ref": "pkg:deb/debian/fonts-liberation",
+      "name": "fonts-liberation",
+      "scope": "required",
+      "purl": "pkg:deb/debian/fonts-liberation",
+      "properties": [
+        {
+          "name": "darkstar:ecosystem",
+          "value": "debian"
+        },
+        {
+          "name": "darkstar:sourceManifest",
+          "value": "docker/Dockerfile"
+        }
+      ]
+    },
+    {
+      "type": "operating-system",
       "bom-ref": "pkg:deb/debian/gcc",
       "name": "gcc",
       "scope": "required",
@@ -249,10 +266,61 @@
     },
     {
       "type": "operating-system",
+      "bom-ref": "pkg:deb/debian/libasound2",
+      "name": "libasound2",
+      "scope": "required",
+      "purl": "pkg:deb/debian/libasound2",
+      "properties": [
+        {
+          "name": "darkstar:ecosystem",
+          "value": "debian"
+        },
+        {
+          "name": "darkstar:sourceManifest",
+          "value": "docker/Dockerfile"
+        }
+      ]
+    },
+    {
+      "type": "operating-system",
+      "bom-ref": "pkg:deb/debian/libdbus-glib-1-2",
+      "name": "libdbus-glib-1-2",
+      "scope": "required",
+      "purl": "pkg:deb/debian/libdbus-glib-1-2",
+      "properties": [
+        {
+          "name": "darkstar:ecosystem",
+          "value": "debian"
+        },
+        {
+          "name": "darkstar:sourceManifest",
+          "value": "docker/Dockerfile"
+        }
+      ]
+    },
+    {
+      "type": "operating-system",
       "bom-ref": "pkg:deb/debian/libfbclient2",
       "name": "libfbclient2",
       "scope": "required",
       "purl": "pkg:deb/debian/libfbclient2",
+      "properties": [
+        {
+          "name": "darkstar:ecosystem",
+          "value": "debian"
+        },
+        {
+          "name": "darkstar:sourceManifest",
+          "value": "docker/Dockerfile"
+        }
+      ]
+    },
+    {
+      "type": "operating-system",
+      "bom-ref": "pkg:deb/debian/libgtk-3-0",
+      "name": "libgtk-3-0",
+      "scope": "required",
+      "purl": "pkg:deb/debian/libgtk-3-0",
       "properties": [
         {
           "name": "darkstar:ecosystem",
@@ -538,6 +606,23 @@
     },
     {
       "type": "operating-system",
+      "bom-ref": "pkg:deb/debian/libxt6",
+      "name": "libxt6",
+      "scope": "required",
+      "purl": "pkg:deb/debian/libxt6",
+      "properties": [
+        {
+          "name": "darkstar:ecosystem",
+          "value": "debian"
+        },
+        {
+          "name": "darkstar:sourceManifest",
+          "value": "docker/Dockerfile"
+        }
+      ]
+    },
+    {
+      "type": "operating-system",
       "bom-ref": "pkg:deb/debian/mariadb-client",
       "name": "mariadb-client",
       "scope": "required",
@@ -763,6 +848,23 @@
       "name": "wget",
       "scope": "required",
       "purl": "pkg:deb/debian/wget",
+      "properties": [
+        {
+          "name": "darkstar:ecosystem",
+          "value": "debian"
+        },
+        {
+          "name": "darkstar:sourceManifest",
+          "value": "docker/Dockerfile"
+        }
+      ]
+    },
+    {
+      "type": "operating-system",
+      "bom-ref": "pkg:deb/debian/xz-utils",
+      "name": "xz-utils",
+      "scope": "required",
+      "purl": "pkg:deb/debian/xz-utils",
       "properties": [
         {
           "name": "darkstar:ecosystem",
@@ -1375,10 +1477,10 @@
     },
     {
       "type": "application",
-      "bom-ref": "tool:github-release:461f4bdeb9972b23",
+      "bom-ref": "tool:github-release:b9c540023283c740",
       "name": "zaproxy",
       "scope": "required",
-      "version": "2.16.0",
+      "version": "2.17.0",
       "properties": [
         {
           "name": "darkstar:ecosystem",
@@ -1541,6 +1643,27 @@
         {
           "name": "darkstar:installer",
           "value": "go install"
+        }
+      ]
+    },
+    {
+      "type": "application",
+      "bom-ref": "tool:mozilla-release:1fd6da4b330807de",
+      "name": "firefox",
+      "scope": "required",
+      "version": "153.7.0esr",
+      "properties": [
+        {
+          "name": "darkstar:ecosystem",
+          "value": "mozilla-release"
+        },
+        {
+          "name": "darkstar:sourceManifest",
+          "value": "docker/Dockerfile"
+        },
+        {
+          "name": "darkstar:installer",
+          "value": "Mozilla release archive"
         }
       ]
     },
@@ -2719,9 +2842,13 @@
         "pkg:deb/debian/curl",
         "pkg:deb/debian/dnsutils",
         "pkg:deb/debian/firebird-dev",
+        "pkg:deb/debian/fonts-liberation",
         "pkg:deb/debian/gcc",
         "pkg:deb/debian/git",
+        "pkg:deb/debian/libasound2",
+        "pkg:deb/debian/libdbus-glib-1-2",
         "pkg:deb/debian/libfbclient2",
+        "pkg:deb/debian/libgtk-3-0",
         "pkg:deb/debian/libgtk2.0-0",
         "pkg:deb/debian/libgtk2.0-dev",
         "pkg:deb/debian/libidn11-dev",
@@ -2738,6 +2865,7 @@
         "pkg:deb/debian/libssl-dev",
         "pkg:deb/debian/libsvn-dev",
         "pkg:deb/debian/libsvn1",
+        "pkg:deb/debian/libxt6",
         "pkg:deb/debian/mariadb-client",
         "pkg:deb/debian/nano",
         "pkg:deb/debian/nikto",
@@ -2752,6 +2880,7 @@
         "pkg:deb/debian/sudo",
         "pkg:deb/debian/tzdata",
         "pkg:deb/debian/wget",
+        "pkg:deb/debian/xz-utils",
         "pkg:docker/darkstar-darkstar",
         "pkg:docker/debian@testing",
         "pkg:docker/golang@1.25",
@@ -2835,7 +2964,8 @@
         "tool:git-tool:538636f75c21aab0",
         "tool:git-tool:8380c681501fe930",
         "tool:git-tool:94c28716f5e23ffd",
-        "tool:github-release:461f4bdeb9972b23"
+        "tool:github-release:b9c540023283c740",
+        "tool:mozilla-release:1fd6da4b330807de"
       ]
     }
   ]

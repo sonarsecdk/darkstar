@@ -343,15 +343,15 @@ class WapitiScanner:
 
 
 # ---------------------------------------------------------------------------
-# OWASP ZAP (baseline passive + spider)
+# OWASP ZAP (passive recon or active policy with browser crawling)
 # ---------------------------------------------------------------------------
 
 class ZAPScanner:
     """
     Wraps the OWASP ZAP security scanner in daemon mode.
 
-    Starts ZAP as a local daemon, performs a spider + passive scan,
-    retrieves JSON alerts, then shuts down the daemon.
+    Recon uses the traditional spider and passive checks. Active policies also
+    use the Client Spider to discover JavaScript routes before active scanning.
     """
 
     TOOL = "zap"
@@ -374,6 +374,8 @@ class ZAPScanner:
 
     def _start_daemon(self) -> bool:
         """Start the ZAP daemon. Returns True when ZAP is ready."""
+        if self.profile and self.profile != "default" and not shutil.which("firefox"):
+            raise RuntimeError("Active ZAP scans require Firefox on the scanner appliance; rebuild or update its scanner image")
         zap_sh = None
         for candidate in ("/opt/zaproxy/zap.sh", "/usr/local/bin/zap.sh", "zap.sh"):
             if os.path.isfile(candidate):
@@ -563,6 +565,7 @@ class ZAPScanner:
             raise RuntimeError("ZAP spider did not finish within five minutes")
 
         if self.policy_name:
+            self._crawl_browser(url)
             logger.info("ZAP: running active policy %s against %s", self.profile, url)
             response = self._zap_api("JSON/ascan/action/scan/?" + urlencode({
                 "url": url, "recurse": "true", "scanPolicyName": self.policy_name,
@@ -631,6 +634,43 @@ class ZAPScanner:
             alerts.extend(page)
             if len(page) < 500:
                 return alerts
+
+    def _crawl_browser(self, url: str) -> None:
+        """Discover JavaScript routes with one browser, restricted to the target subtree."""
+        statistics = "JSON/stats/view/stats/?keyPrefix=stats.client.spider."
+        previous = self._zap_api(statistics)
+        before = int(previous.get("stats.client.spider.urls", 0))
+        logger.info("ZAP: crawling JavaScript pages with Firefox at %s", url)
+        response = self._zap_api("JSON/clientSpider/action/scan/?" + urlencode({
+            "url": url, "browser": "firefox-headless", "subtreeOnly": "true",
+            "numberOfBrowsers": 1, "scopeCheck": "STRICT",
+        }))
+        if not isinstance(response, dict) or "scan" not in response:
+            raise RuntimeError("ZAP could not start its Client Spider; check the appliance's Client Spider and Selenium add-ons")
+        scan_id = response["scan"]
+        deadline = time.monotonic() + 600
+        while time.monotonic() < deadline:
+            progress = self._zap_api("JSON/clientSpider/view/status/?" + urlencode({"scanId": scan_id}))
+            if isinstance(progress, dict) and int(progress.get("status", 0)) >= 100:
+                break
+            time.sleep(3)
+        else:
+            try:
+                self._zap_api("JSON/clientSpider/action/stop/?" + urlencode({"scanId": scan_id}))
+            finally:
+                raise RuntimeError("ZAP browser crawl did not finish within ten minutes")
+        # ZAP marks the scan finished just before publishing its final counters.
+        for _ in range(5):
+            current = self._zap_api(statistics)
+            if int(current.get("stats.client.spider.event.max.time", 0)) > int(previous.get("stats.client.spider.event.max.time", 0)):
+                raise RuntimeError("ZAP browser crawl reached the appliance's configured time limit before finishing")
+            after = int(current.get("stats.client.spider.urls", 0))
+            if after > before:
+                break
+            time.sleep(0.5)
+        else:
+            raise RuntimeError("ZAP browser crawl fetched no URLs; check Firefox, the Client Spider add-on, and the appliance's ZAP log")
+        logger.info("ZAP: browser crawl fetched %d URLs before active scanning", after - before)
 
     def run(self) -> None:
         """Start ZAP, scan all targets, persist findings, shut down ZAP."""

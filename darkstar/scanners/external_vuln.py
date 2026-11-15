@@ -388,7 +388,7 @@ class ZAPScanner:
 
         try:
             version_check = subprocess.run(
-                [zap_sh, "-version"],
+                [zap_sh, "-silent", "-version"],
                 capture_output=True,
                 text=True,
                 timeout=45,
@@ -406,6 +406,8 @@ class ZAPScanner:
 
         cmd = [
             zap_sh,
+            # Keep add-on updates outside scans so the tested runtime stays stable.
+            "-silent",
             "-daemon",
             "-host", "127.0.0.1",
             "-port", str(self._port),

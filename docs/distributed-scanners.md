@@ -133,6 +133,10 @@ Allow memory for both Java and Firefox, and test the crawl on an owned applicati
 before accepting active jobs. The scan log records the browser's fetched URL
 count and the final alert counts by ZAP risk. A browser startup failure or a
 crawl that fetches no URLs must be investigated before trusting scan coverage.
+Darkstar starts ZAP in silent mode so it does not download add-on updates during
+preflight or scanning. Update and test the scanner image deliberately. Existing
+ZAP home directories and custom runtime mounts can override bundled add-ons;
+check the loaded versions in ZAP's log when upgrading an appliance.
 
 Remote workers need both API and MariaDB connectivity. A VPN or an SSH tunnel
 can provide these. The current database client uses port 3306; a tunnel can map

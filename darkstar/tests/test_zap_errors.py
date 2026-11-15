@@ -10,10 +10,23 @@ from unittest.mock import Mock
 import pytest
 
 from scanners.external_vuln import ZAPScanner
+from scanners import external_vuln
 
 
 def response(body):
     return io.BytesIO(json.dumps(body).encode())
+
+
+def test_preflight_and_daemon_do_not_update_addons_during_a_scan(monkeypatch):
+    monkeypatch.setattr(external_vuln.os.path, "isfile", lambda path: path == "/opt/zaproxy/zap.sh")
+    preflight = Mock(return_value=Mock(returncode=0))
+    daemon = Mock()
+    monkeypatch.setattr(external_vuln.subprocess, "run", preflight)
+    monkeypatch.setattr(external_vuln.subprocess, "Popen", daemon)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: response({"version": "2.17.0"}))
+    assert ZAPScanner("https://example.test", "org")._start_daemon()
+    assert preflight.call_args.args[0] == ["/opt/zaproxy/zap.sh", "-silent", "-version"]
+    assert daemon.call_args.args[0][:3] == ["/opt/zaproxy/zap.sh", "-silent", "-daemon"]
 
 
 @pytest.mark.parametrize("http_error", [False, True])

@@ -125,6 +125,15 @@ the administrator's policy files remain unchanged. The catalog refreshes every
 five minutes. Imported policy compatibility should be checked with the deployed
 ZAP version before accepting jobs.
 
+Active ZAP policies also use the Client Spider with headless Firefox. Use the
+updated scanner image, which includes Firefox ESR and ZAP 2.17, or install Firefox
+and compatible Client Side Integration, Selenium and WebDriver add-ons on a
+custom appliance. Replacing only the Python source does not install the browser.
+Allow memory for both Java and Firefox, and test the crawl on an owned application
+before accepting active jobs. The scan log records the browser's fetched URL
+count and the final alert counts by ZAP risk. A browser startup failure or a
+crawl that fetches no URLs must be investigated before trusting scan coverage.
+
 Remote workers need both API and MariaDB connectivity. A VPN or an SSH tunnel
 can provide these. The current database client uses port 3306; a tunnel can map
 a differently published database port to port 3306 on the worker host. When

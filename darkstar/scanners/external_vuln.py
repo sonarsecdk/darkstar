@@ -26,7 +26,7 @@ from darkstar.scanner_profiles import profile_file, zap_policy_directory
 from core.db_helper import insert_vulnerability_to_database
 from core.models.vulnerability import Vulnerability
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("main")
 
 
 # ---------------------------------------------------------------------------
@@ -65,8 +65,13 @@ def _normalize_wapiti_level(level: int) -> str:
 
 
 def _normalize_zap_risk(risk_code: str | int) -> str:
-    """Map OWASP ZAP risk code to DarkStar severity."""
-    return {0: "info", 1: "low", 2: "medium", 3: "high"}.get(int(risk_code), "info")
+    """Accept API risk labels and the numeric codes used by exported reports."""
+    levels = {"informational": "info", "info": "info", "low": "low", "medium": "medium", "high": "high",
+              "0": "info", "1": "low", "2": "medium", "3": "high"}
+    value = str(risk_code).strip().lower()
+    if value not in levels:
+        raise ValueError(f"ZAP returned an unsupported alert risk: {risk_code!r}")
+    return levels[value]
 
 
 def _normalize_testssl_severity(sev: str) -> str:
@@ -338,15 +343,15 @@ class WapitiScanner:
 
 
 # ---------------------------------------------------------------------------
-# OWASP ZAP (baseline passive + spider)
+# OWASP ZAP (passive recon or active policy with browser crawling)
 # ---------------------------------------------------------------------------
 
 class ZAPScanner:
     """
     Wraps the OWASP ZAP security scanner in daemon mode.
 
-    Starts ZAP as a local daemon, performs a spider + passive scan,
-    retrieves JSON alerts, then shuts down the daemon.
+    Recon uses the traditional spider and passive checks. Active policies also
+    use the Client Spider to discover JavaScript routes before active scanning.
     """
 
     TOOL = "zap"
@@ -369,6 +374,8 @@ class ZAPScanner:
 
     def _start_daemon(self) -> bool:
         """Start the ZAP daemon. Returns True when ZAP is ready."""
+        if self.profile and self.profile != "default" and not shutil.which("firefox"):
+            raise RuntimeError("Active ZAP scans require Firefox on the scanner appliance; rebuild or update its scanner image")
         zap_sh = None
         for candidate in ("/opt/zaproxy/zap.sh", "/usr/local/bin/zap.sh", "zap.sh"):
             if os.path.isfile(candidate):
@@ -558,6 +565,8 @@ class ZAPScanner:
             raise RuntimeError("ZAP spider did not finish within five minutes")
 
         if self.policy_name:
+            self._crawl_browser(url)
+            logger.info("ZAP: running active policy %s against %s", self.profile, url)
             response = self._zap_api("JSON/ascan/action/scan/?" + urlencode({
                 "url": url, "recurse": "true", "scanPolicyName": self.policy_name,
             }))
@@ -582,15 +591,13 @@ class ZAPScanner:
         else:
             raise RuntimeError("ZAP passive scan did not finish within four minutes")
 
-        # Retrieve alerts
-        alerts_resp = self._zap_api("JSON/core/view/alerts/?" + urlencode({"baseurl": url, "start": 0, "count": 500}))
-        if not alerts_resp or "alerts" not in alerts_resp:
-            raise RuntimeError("ZAP could not retrieve its report")
-        alerts = alerts_resp["alerts"]
-
+        alerts = self._get_alerts(url)
+        counts = {"high": 0, "medium": 0, "low": 0, "info": 0}
         for alert in alerts:
-            risk = alert.get("riskcode", "1")
-            if int(risk) == 0:
+            risk = alert.get("risk") if alert.get("risk") is not None else alert.get("riskcode")
+            severity = _normalize_zap_risk(risk)
+            counts[severity] += 1
+            if severity == "info":
                 continue  # skip info-only
 
             affected = alert.get("url") or url
@@ -603,14 +610,67 @@ class ZAPScanner:
                     "host": hostname,
                     "affected_item": affected,
                     "summary": alert.get("description") or "",
-                    "severity": _normalize_zap_risk(risk),
+                    "severity": severity,
                     "solution": alert.get("solution") or "",
                     "cwe": cwe,
                     "references": alert.get("reference") or "",
                 }
             )
 
+        logger.info("ZAP: %s returned %d alerts: %d high, %d medium, %d low, %d informational",
+                    url, len(alerts), counts["high"], counts["medium"], counts["low"], counts["info"])
         return findings
+
+    def _get_alerts(self, url: str) -> list[dict]:
+        """Read every page so findings beyond the first 500 are retained."""
+        alerts = []
+        while True:
+            response = self._zap_api("JSON/core/view/alerts/?" + urlencode({
+                "baseurl": url, "start": len(alerts), "count": 500,
+            }))
+            page = response.get("alerts") if isinstance(response, dict) else None
+            if not isinstance(page, list) or any(not isinstance(alert, dict) for alert in page):
+                raise RuntimeError("ZAP could not retrieve its report")
+            alerts.extend(page)
+            if len(page) < 500:
+                return alerts
+
+    def _crawl_browser(self, url: str) -> None:
+        """Discover JavaScript routes with one browser, restricted to the target subtree."""
+        statistics = "JSON/stats/view/stats/?keyPrefix=stats.client.spider."
+        previous = self._zap_api(statistics)
+        before = int(previous.get("stats.client.spider.urls", 0))
+        logger.info("ZAP: crawling JavaScript pages with Firefox at %s", url)
+        response = self._zap_api("JSON/clientSpider/action/scan/?" + urlencode({
+            "url": url, "browser": "firefox-headless", "subtreeOnly": "true",
+            "numberOfBrowsers": 1, "scopeCheck": "STRICT",
+        }))
+        if not isinstance(response, dict) or "scan" not in response:
+            raise RuntimeError("ZAP could not start its Client Spider; check the appliance's Client Spider and Selenium add-ons")
+        scan_id = response["scan"]
+        deadline = time.monotonic() + 600
+        while time.monotonic() < deadline:
+            progress = self._zap_api("JSON/clientSpider/view/status/?" + urlencode({"scanId": scan_id}))
+            if isinstance(progress, dict) and int(progress.get("status", 0)) >= 100:
+                break
+            time.sleep(3)
+        else:
+            try:
+                self._zap_api("JSON/clientSpider/action/stop/?" + urlencode({"scanId": scan_id}))
+            finally:
+                raise RuntimeError("ZAP browser crawl did not finish within ten minutes")
+        # ZAP marks the scan finished just before publishing its final counters.
+        for _ in range(5):
+            current = self._zap_api(statistics)
+            if int(current.get("stats.client.spider.event.max.time", 0)) > int(previous.get("stats.client.spider.event.max.time", 0)):
+                raise RuntimeError("ZAP browser crawl reached the appliance's configured time limit before finishing")
+            after = int(current.get("stats.client.spider.urls", 0))
+            if after > before:
+                break
+            time.sleep(0.5)
+        else:
+            raise RuntimeError("ZAP browser crawl fetched no URLs; check Firefox, the Client Spider add-on, and the appliance's ZAP log")
+        logger.info("ZAP: browser crawl fetched %d URLs before active scanning", after - before)
 
     def run(self) -> None:
         """Start ZAP, scan all targets, persist findings, shut down ZAP."""

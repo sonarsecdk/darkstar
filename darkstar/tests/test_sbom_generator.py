@@ -96,7 +96,11 @@ def test_sbom_covers_declared_runtime_surfaces():
     }
     assert expected_refs <= set(components)
     assert any(
-        component["name"] == "zaproxy" and component.get("version") == "2.16.0"
+        component["name"] == "zaproxy" and component.get("version") == "2.17.0"
+        for component in components.values()
+    )
+    assert any(
+        component["name"] == "firefox" and component.get("version") == "153.7.0esr"
         for component in components.values()
     )
 

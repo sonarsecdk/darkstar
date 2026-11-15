@@ -89,6 +89,7 @@ def test_http_error_pages_are_real_responses_and_can_be_scanned(status):
 def test_selected_policy_failure_propagates_actual_zap_reason(monkeypatch):
     scanner = ZAPScanner("https://example.test", "org")
     scanner.policy_name = "Selected policy"
+    scanner._crawl_browser = Mock()
 
     def request(url, **kwargs):
         if "/accessUrl/" in url:

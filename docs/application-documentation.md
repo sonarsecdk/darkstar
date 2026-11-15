@@ -541,7 +541,18 @@ Choose appliances, tick their
 scanners, then select one installed profile for each. Search and page through
 large catalogs. OpenVAS exposes its scan configurations; Nuclei exposes installed
 YAML templates; ZAP offers recon (spider and passive scan) and installed `.policy`
-files for active scanning. Other advertised scanners use their existing default
+files for active scanning. Active ZAP policies run the traditional spider, then
+a headless Firefox Client Spider to discover JavaScript pages and API requests,
+before applying the selected active policy. Browser crawling is restricted to
+the target URL's subtree and uses one browser. It has a ten-minute limit;
+startup failures, empty browser crawls and timeouts fail the scan. Recon remains
+passive and does not use the browser. ZAP reports High, Medium, Low and
+Informational risks; it has no Critical category. Darkstar preserves those risk
+levels and skips informational-only ZAP findings.
+
+Browser crawling explores the public application. Authenticated pages still
+require a separate authentication configuration; an unauthenticated scan cannot
+verify every application feature. Other advertised scanners use their existing default
 behavior. Nuclei workflow files and ZAP automation plans are different formats
 and are not advertised as templates or scan policies.
 
